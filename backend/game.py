@@ -1,3 +1,4 @@
+import os
 import random
 import time
 import uuid
@@ -46,7 +47,8 @@ class Game:
         self._set_action_deadline()
 
     def _set_action_deadline(self) -> None:
-        self.state.action_phase_deadline = time.time() + 45.0
+        seconds = float(os.environ.get("ACTION_PHASE_SECONDS", "45"))
+        self.state.action_phase_deadline = time.time() + seconds
 
     def _apply_afk_defaults(self) -> None:
         """Players who didn't submit an action default to BOLSTER on lowest-health system."""

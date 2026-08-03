@@ -1,3 +1,4 @@
+import os
 import random
 from models import Crisis, SystemName
 
@@ -124,6 +125,14 @@ def get_crisis_count(round_number: int) -> int:
 
 
 def spawn_crises(round_number: int) -> list[Crisis]:
+    # Test hook: if CRISIS_SEED env var is set, seed the RNG ONCE (on the
+    # first call, round 1) so the entire game sequence is deterministic.
+    # Subsequent rounds advance the RNG naturally rather than re-seeding
+    # each round (re-seeding per round made every round's first draw
+    # identical, starving some systems of crises).
+    seed = os.environ.get("CRISIS_SEED")
+    if seed and round_number == 1:
+        random.seed(int(seed))
     count = get_crisis_count(round_number)
     # Filter pool by valid tier for this round
     if round_number <= 3:

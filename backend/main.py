@@ -184,6 +184,34 @@ async def websocket_endpoint(websocket: WebSocket, room_code: str):
                 except ValueError as e:
                     await websocket.send_json({"type": "error", "message": str(e)})
 
+            elif msg_type == "debug_set_system" and os.environ.get("DEBUG_MODE"):
+                # Test-only hook: directly set a system's HP. Only enabled
+                # when DEBUG_MODE env var is set (never in production).
+                game = ROOMS.get(room_code)
+                if game is None or player_id is None:
+                    continue
+                sys_name = data.get("system")
+                hp = data.get("hp")
+                if sys_name in game.get_state().systems:
+                    game.get_state().systems[sys_name] = hp
+                    await broadcast_state(room_code)
+                else:
+                    await websocket.send_json(
+                        {"type": "error", "message": f"unknown system {sys_name}"}
+                    )
+
+            elif msg_type == "debug_down_player" and os.environ.get("DEBUG_MODE"):
+                # Test-only hook: down a specific player by name. Only
+                # enabled when DEBUG_MODE env var is set.
+                game = ROOMS.get(room_code)
+                if game is None or player_id is None:
+                    continue
+                target_name = data.get("name")
+                for p in game.get_state().players:
+                    if p.name == target_name:
+                        p.is_down = True
+                await broadcast_state(room_code)
+
     except WebSocketDisconnect:
         if player_id is not None:
             manager.disconnect(room_code, player_id)
