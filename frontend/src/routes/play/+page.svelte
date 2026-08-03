@@ -82,15 +82,6 @@
     selectedCrisisId = null;
     selectedPlayerId = null;
   }
-
-  $effect(() => {
-    const phase = $gameState?.phase;
-    if (phase === 'finale') {
-      window.location.href = '/finale';
-    } else if (phase === 'results') {
-      window.location.href = '/results';
-    }
-  });
 </script>
 
 <div class="container">

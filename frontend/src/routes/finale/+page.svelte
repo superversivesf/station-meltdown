@@ -30,16 +30,6 @@
     selectedAction = null;
   }
 
-  // Redirect if phase changes
-  $effect(() => {
-    const phase = $gameState?.phase;
-    if (phase === 'results') {
-      window.location.href = '/results';
-    } else if (phase === 'survival') {
-      window.location.href = '/play';
-    }
-  });
-
   function escapeProgress(p: Player): number {
     return Math.min(100, (p.escape_track / 3) * 100);
   }

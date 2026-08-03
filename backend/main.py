@@ -93,6 +93,12 @@ async def start_action_timer(room_code: str) -> None:
     # timer was spawned by the resolve handler and owns this round.
     if state.action_phase_deadline != deadline:
         return
+    # 30-minute hard session cap: if the game has run >= 1800s since start,
+    # end it as a loss instead of resolving another round.
+    if state.started_at is not None and (time.time() - state.started_at) >= 1800:
+        game._end_game(victory=False)
+        await broadcast_state(room_code)
+        return
     try:
         game.resolve_round()
     except Exception:
@@ -215,6 +221,13 @@ async def websocket_endpoint(websocket: WebSocket, room_code: str):
     except WebSocketDisconnect:
         if player_id is not None:
             manager.disconnect(room_code, player_id)
+            game = ROOMS.get(room_code)
+            if game is not None and game.state.phase in (Phase.SURVIVAL, Phase.FINALE):
+                for p in game.state.players:
+                    if p.id == player_id:
+                        p.is_down = True
+                        break
+                await broadcast_state(room_code)
 
 
 # Mount static SPA in production (built by Dockerfile)

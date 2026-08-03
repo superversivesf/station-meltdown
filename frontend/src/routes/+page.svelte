@@ -25,7 +25,7 @@
     const checkConnected = setInterval(() => {
       if ($connectionStatus === 'connected') {
         clearInterval(checkConnected);
-        ws.send({ type: 'join', name: name.trim() });
+        ws.join(name.trim());
         goto('/lobby');
       }
     }, 100);

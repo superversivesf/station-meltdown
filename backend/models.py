@@ -69,6 +69,7 @@ class GameState(BaseModel):
     pending_actions: list[PlayerAction] = Field(default_factory=list)
     collapse_bar: int = 0  # 0-100, finale only
     action_phase_deadline: Optional[float] = None  # unix timestamp
+    started_at: Optional[float] = None
     crew_survived: list[str] = Field(default_factory=list)  # player IDs
     crew_lost: list[str] = Field(default_factory=list)
     victory: bool = False

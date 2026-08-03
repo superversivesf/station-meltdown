@@ -43,6 +43,7 @@ class Game:
             raise ValueError(f"minimum {self.MIN_PLAYERS} players required")
         self.state.phase = Phase.SURVIVAL
         self.state.round_number = 1
+        self.state.started_at = time.time()
         self.state.active_crises = spawn_crises(1)
         self._set_action_deadline()
 

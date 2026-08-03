@@ -3,6 +3,7 @@ import type { ServerMessage, ClientMessage } from './types';
 export class GameWebSocket {
   private ws: WebSocket | null = null;
   private url: string;
+  private name: string | null = null;
   private reconnectAttempts = 0;
   private maxReconnect = 5;
   private listeners: ((msg: ServerMessage) => void)[] = [];
@@ -14,11 +15,19 @@ export class GameWebSocket {
     this.url = `${protocol}//${host}/ws/${roomCode}`;
   }
 
+  join(name: string): void {
+    this.name = name;
+    this.send({ type: 'join', name });
+  }
+
   connect() {
     this.ws = new WebSocket(this.url);
     this.ws.onopen = () => {
       this.reconnectAttempts = 0;
       this.notifyStatus('connected');
+      if (this.name !== null) {
+        this.send({ type: 'join', name: this.name });
+      }
     };
     this.ws.onmessage = (event) => {
       const msg: ServerMessage = JSON.parse(event.data);
