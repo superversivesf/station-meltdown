@@ -63,30 +63,100 @@
 <style>
   .container {
     max-width: 400px;
-    margin: 2rem auto;
-    padding: 1rem;
-    font-family: system-ui, sans-serif;
+    margin: 4rem auto;
+    padding: 2rem 1.5rem;
+    background: var(--station-panel);
+    border: 1px solid var(--station-border);
+    border-radius: 6px;
+    box-shadow:
+      0 0 40px rgba(59, 130, 246, 0.08),
+      inset 0 1px 0 rgba(255,255,255,0.04);
+    position: relative;
   }
-  h1 { font-size: 1.8rem; margin-bottom: 0.5rem; }
-  .tagline { color: #888; font-size: 0.9rem; margin-bottom: 1.5rem; }
-  .form { display: flex; flex-direction: column; gap: 1rem; }
-  label { display: flex; flex-direction: column; gap: 0.25rem; font-size: 0.85rem; }
+  .container::before {
+    content: 'EMERGENCY PROTOCOL';
+    position: absolute;
+    top: -10px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: var(--warn-amber);
+    color: #0a0e14;
+    font-size: 0.7rem;
+    font-weight: 700;
+    letter-spacing: 0.15em;
+    padding: 0.15rem 0.75rem;
+    border-radius: 2px;
+  }
+  h1 {
+    font-size: 1.9rem;
+    margin: 0.5rem 0;
+    letter-spacing: 0.05em;
+    text-align: center;
+    text-shadow: 0 0 20px rgba(239, 68, 68, 0.3);
+  }
+  .tagline {
+    color: var(--text-muted);
+    font-size: 0.88rem;
+    margin-bottom: 2rem;
+    text-align: center;
+    line-height: 1.5;
+  }
+  .form { display: flex; flex-direction: column; gap: 1.25rem; }
+  label {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+    font-size: 0.78rem;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+  }
   input {
-    padding: 0.75rem;
+    padding: 0.85rem 1rem;
     font-size: 1rem;
-    border: 1px solid #ccc;
+    background: #0a0e14;
+    color: var(--text-primary);
+    border: 1px solid var(--station-border);
     border-radius: 4px;
+    transition: border-color 0.2s, box-shadow 0.2s;
   }
+  input:focus {
+    outline: none;
+    border-color: var(--action-blue);
+    box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2);
+  }
+  input::placeholder { color: var(--text-dim); }
   button {
-    padding: 0.75rem;
+    padding: 0.85rem;
     font-size: 1rem;
-    background: #2563eb;
-    color: white;
-    border: none;
+    font-weight: 600;
+    background: linear-gradient(180deg, #4f6b8a 0%, #2d3e54 100%);
+    color: var(--text-primary);
+    border: 1px solid #3a5070;
     border-radius: 4px;
     cursor: pointer;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    transition: background 0.2s, box-shadow 0.2s;
   }
-  button:hover { background: #1d4ed8; }
-  .error { color: #dc2626; font-size: 0.85rem; }
-  .status { color: #888; font-size: 0.8rem; margin-top: 1rem; }
+  button:hover {
+    background: linear-gradient(180deg, #5a7a9e 0%, #354866 100%);
+    box-shadow: 0 0 16px rgba(59, 130, 246, 0.3);
+  }
+  .error {
+    color: var(--warn-red);
+    font-size: 0.85rem;
+    text-align: center;
+    padding: 0.5rem;
+    background: rgba(239, 68, 68, 0.08);
+    border-left: 3px solid var(--warn-red);
+    border-radius: 2px;
+  }
+  .status {
+    color: var(--text-dim);
+    font-size: 0.75rem;
+    margin-top: 1.5rem;
+    text-align: center;
+    font-family: 'Consolas', monospace;
+  }
 </style>

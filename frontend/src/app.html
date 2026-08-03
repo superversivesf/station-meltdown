@@ -5,6 +5,62 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Station Meltdown</title>
   %sveltekit.head%
+  <style>
+    /* === Global Station Atmosphere === */
+    :root {
+      --station-bg: #0a0e14;
+      --station-panel: #131922;
+      --station-border: #2a3441;
+      --station-glow: #0d1b2a;
+      --text-primary: #e8eef5;
+      --text-muted: #7a8b9c;
+      --text-dim: #4a5b6c;
+      --warn-amber: #f59e0b;
+      --warn-red: #ef4444;
+      --ok-green: #4ade80;
+      --action-blue: #3b82f6;
+      --crisis-amber: #f59e0b;
+      --purple-accent: #a78bfa;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      background: var(--station-bg);
+      color: var(--text-primary);
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      min-height: 100vh;
+      /* Subtle scanline texture */
+      background-image:
+        repeating-linear-gradient(
+          0deg,
+          transparent 0px,
+          transparent 2px,
+          rgba(255,255,255,0.01) 2px,
+          rgba(255,255,255,0.01) 4px
+        ),
+        radial-gradient(ellipse at top, var(--station-glow) 0%, var(--station-bg) 70%);
+      background-attachment: fixed;
+    }
+
+    /* Corner warning stripes — like a hazard zone */
+    body::before {
+      content: '';
+      position: fixed;
+      top: 0; left: 0; right: 0;
+      height: 4px;
+      background: repeating-linear-gradient(
+        45deg,
+        var(--warn-amber) 0px,
+        var(--warn-amber) 10px,
+        #0a0e14 10px,
+        #0a0e14 20px
+      );
+      z-index: 100;
+      pointer-events: none;
+    }
+  </style>
 </head>
 <body data-sveltekit-preload-data="hover">
   <div style="display: contents">%sveltekit.body%</div>
