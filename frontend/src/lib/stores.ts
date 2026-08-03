@@ -1,5 +1,14 @@
 import { writable, derived } from 'svelte/store';
 import type { GameState, ServerMessage } from './types';
+import type { GameWebSocket } from './websocket';
+
+let wsInstance: GameWebSocket | null = null;
+export function setWs(ws: GameWebSocket | null) {
+  wsInstance = ws;
+}
+export function getWs(): GameWebSocket | null {
+  return wsInstance;
+}
 
 export const gameState = writable<GameState | null>(null);
 export const playerId = writable<string | null>(null);
