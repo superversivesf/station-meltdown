@@ -1,9 +1,11 @@
+import asyncio
 import os
+import time
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 
 from game import Game
-from models import PlayerAction, ActionType
+from models import PlayerAction, ActionType, Phase
 
 app = FastAPI()
 
@@ -57,6 +59,47 @@ async def broadcast_state(room_code: str) -> None:
             manager.disconnect(room_code, player_id)
 
 
+async def start_action_timer(room_code: str) -> None:
+    """Background task: auto-resolve the round when the action deadline passes.
+
+    Reads `action_phase_deadline` from the game state, sleeps until it
+    elapses, then resolves the round (if the game is still in an action
+    phase and the deadline hasn't been bumped by a manual resolve/advance).
+    Handles missing games and stale deadlines gracefully — safe to fire-and-
+    forget via `asyncio.create_task` from the WS handlers.
+    """
+    game = ROOMS.get(room_code)
+    if game is None:
+        return
+    deadline = game.get_state().action_phase_deadline
+    if deadline is None:
+        return
+    # Sleep until the deadline (clamped to >=0 to avoid negative sleeps).
+    # `action_phase_deadline` is a wall-clock unix timestamp (set via
+    # `time.time()` in game.py), so use `time.time()` here, not the
+    # monotonic event-loop clock.
+    remaining = deadline - time.time()
+    if remaining > 0:
+        await asyncio.sleep(remaining)
+    # Re-read state after waking: the game may have been resolved manually,
+    # ended, or removed while we slept.
+    game = ROOMS.get(room_code)
+    if game is None:
+        return
+    state = game.get_state()
+    if state.phase not in (Phase.SURVIVAL, Phase.FINALE):
+        return
+    # If the deadline moved (manual resolve set a new one), bow out — a fresh
+    # timer was spawned by the resolve handler and owns this round.
+    if state.action_phase_deadline != deadline:
+        return
+    try:
+        game.resolve_round()
+    except Exception:
+        return
+    await broadcast_state(room_code)
+
+
 @app.websocket("/ws/{room_code}")
 async def websocket_endpoint(websocket: WebSocket, room_code: str):
     room_code = room_code.upper()
@@ -92,6 +135,7 @@ async def websocket_endpoint(websocket: WebSocket, room_code: str):
                 try:
                     game.start()
                     await broadcast_state(room_code)
+                    asyncio.create_task(start_action_timer(room_code))
                 except ValueError as e:
                     await websocket.send_json({"type": "error", "message": str(e)})
 
@@ -124,6 +168,10 @@ async def websocket_endpoint(websocket: WebSocket, room_code: str):
                 try:
                     game.resolve_round()
                     await broadcast_state(room_code)
+                    # If the game is still in progress, arm the next round's
+                    # auto-resolve timer. No-op if no deadline was set (game
+                    # ended / transitioned to results).
+                    asyncio.create_task(start_action_timer(room_code))
                 except ValueError as e:
                     await websocket.send_json({"type": "error", "message": str(e)})
 
