@@ -43,6 +43,36 @@ class Game:
         self.state.phase = Phase.SURVIVAL
         self.state.round_number = 1
         self.state.active_crises = spawn_crises(1)
+        self._set_action_deadline()
+
+    def _set_action_deadline(self) -> None:
+        self.state.action_phase_deadline = time.time() + 45.0
+
+    def _apply_afk_defaults(self) -> None:
+        """Players who didn't submit an action default to BOLSTER on lowest-health system."""
+        acted_ids = {a.player_id for a in self.state.pending_actions}
+        for player in self.state.players:
+            if player.is_down:
+                continue
+            if player.id not in acted_ids:
+                lowest = min(self.state.systems, key=lambda s: self.state.systems[s])
+                self.state.pending_actions.append(PlayerAction(
+                    player_id=player.id,
+                    action_type=ActionType.BOLSTER,
+                    target_system=lowest,
+                ))
+
+    def _apply_afk_defaults_finale(self) -> None:
+        """In finale, AFK players default to RUN."""
+        acted_ids = {a.player_id for a in self.state.pending_actions}
+        for player in self.state.players:
+            if player.is_down:
+                continue
+            if player.id not in acted_ids:
+                self.state.pending_actions.append(PlayerAction(
+                    player_id=player.id,
+                    action_type=ActionType.RUN,
+                ))
 
     def submit_action(self, action: PlayerAction) -> None:
         if self.state.phase != Phase.SURVIVAL and self.state.phase != Phase.FINALE:
@@ -61,6 +91,7 @@ class Game:
             self._resolve_finale_round()
 
     def _resolve_survival_round(self) -> None:
+        self._apply_afk_defaults()
         actions = self.state.pending_actions
         # Group FIX actions by crisis ID
         fix_groups: dict[str, list[PlayerAction]] = {}
@@ -137,8 +168,10 @@ class Game:
             self.state.collapse_bar = 0
         else:
             self.state.active_crises = spawn_crises(self.state.round_number)
+            self._set_action_deadline()
 
     def _resolve_finale_round(self) -> None:
+        self._apply_afk_defaults_finale()
         actions = self.state.pending_actions
 
         # Apply RUN actions
@@ -183,6 +216,8 @@ class Game:
         if self.state.round_number > 3:
             # Finale ended — check who escaped
             self._end_finale()
+        else:
+            self._set_action_deadline()
 
     def _end_finale(self) -> None:
         survived = []

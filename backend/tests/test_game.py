@@ -92,6 +92,7 @@ def test_submit_action_stores_pending():
 
 def test_resolve_bolster_adds_health():
     g = make_game_with_players(4)
+    g.state.active_crises = []  # isolate bolster logic from crisis drain
     p = g.state.players[0]
     g.state.systems[SystemName.HULL] = 50
     g.submit_action(PlayerAction(
@@ -99,6 +100,12 @@ def test_resolve_bolster_adds_health():
         action_type=ActionType.BOLSTER,
         target_system=SystemName.HULL,
     ))
+    for other in g.state.players[1:]:
+        g.submit_action(PlayerAction(
+            player_id=other.id,
+            action_type=ActionType.BOLSTER,
+            target_system=SystemName.COMMS,
+        ))
     g.resolve_round()
     assert g.state.systems[SystemName.HULL] == 55  # 50 + 5
 
@@ -153,6 +160,14 @@ def test_resolve_fix_with_insufficient_crew_drains():
         target_system=crisis.system,
         target_crisis_id=crisis.id,
     ))
+    # Other players bolster a non-crisis system so they don't mask the drain
+    bolster_target = next(s for s in SystemName if s != crisis.system)
+    for other in g.state.players[1:]:
+        g.submit_action(PlayerAction(
+            player_id=other.id,
+            action_type=ActionType.BOLSTER,
+            target_system=bolster_target,
+        ))
     initial_health = g.state.systems[crisis.system]
     g.resolve_round()
     # System should have drained (not enough crew)
@@ -277,6 +292,12 @@ def test_revive_requires_med_bay_above_zero():
         action_type=ActionType.REVIVE,
         target_player_id=downed_p.id,
     ))
+    for other in g.state.players[2:]:
+        g.submit_action(PlayerAction(
+            player_id=other.id,
+            action_type=ActionType.BOLSTER,
+            target_system=SystemName.COMMS,
+        ))
     g.resolve_round()
     assert downed_p.is_down is True  # still down, med bay offline
 

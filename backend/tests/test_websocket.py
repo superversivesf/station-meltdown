@@ -71,3 +71,49 @@ def test_websocket_start_success():
         assert msg["type"] == "state"
         assert msg["state"]["phase"] == "survival"
         assert msg["state"]["round_number"] == 1
+
+
+def test_action_phase_sets_deadline():
+    """When game starts, action phase deadline is set."""
+    client = TestClient(app)
+    with client.websocket_connect("/ws/TIMER1") as ws:
+        ws.send_json({"type": "join", "name": "Alice"})
+        ws.receive_json()
+        for i in range(3):
+            with client.websocket_connect("/ws/TIMER1") as ws_other:
+                ws_other.send_json({"type": "join", "name": f"P{i}"})
+                ws.receive_json()
+                ws_other.receive_json()
+        ws.send_json({"type": "start"})
+        msg = ws.receive_json()
+        assert msg["state"]["phase"] == "survival"
+        assert msg["state"]["action_phase_deadline"] is not None
+        assert msg["state"]["action_phase_deadline"] > 0
+
+
+def test_afk_player_defaults_to_bolster():
+    """If a player doesn't submit an action, they default to BOLSTER on resolve."""
+    from main import ROOMS
+    client = TestClient(app)
+    with client.websocket_connect("/ws/TIMER2") as ws:
+        ws.send_json({"type": "join", "name": "Alice"})
+        ws.receive_json()
+        for i in range(3):
+            with client.websocket_connect("/ws/TIMER2") as ws_other:
+                ws_other.send_json({"type": "join", "name": f"P{i}"})
+                ws.receive_json()
+                ws_other.receive_json()
+        ws.send_json({"type": "start"})
+        ws.receive_json()
+        # Only one player submits an action
+        ws.send_json({
+            "type": "action",
+            "action_type": "bolster",
+            "target_system": "shields",
+        })
+        ws.receive_json()  # action_ack
+        # Resolve — 3 players didn't act, should default to bolster
+        ws.send_json({"type": "resolve"})
+        msg = ws.receive_json()
+        # No crash, state advanced
+        assert msg["state"]["round_number"] == 2
