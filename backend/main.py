@@ -46,12 +46,15 @@ async def broadcast_state(room_code: str) -> None:
     if game is None:
         return
     state_data = game.get_state().model_dump(mode="json")
-    for player_id, ws in manager.room(room_code).items():
-        await ws.send_json({
-            "type": "state",
-            "state": state_data,
-            "player_id": player_id,
-        })
+    for player_id, ws in list(manager.room(room_code).items()):
+        try:
+            await ws.send_json({
+                "type": "state",
+                "state": state_data,
+                "player_id": player_id,
+            })
+        except Exception:
+            manager.disconnect(room_code, player_id)
 
 
 @app.websocket("/ws/{room_code}")
@@ -118,8 +121,11 @@ async def websocket_endpoint(websocket: WebSocket, room_code: str):
                         {"type": "error", "message": "Only host can resolve"}
                     )
                     continue
-                game.resolve_round()
-                await broadcast_state(room_code)
+                try:
+                    game.resolve_round()
+                    await broadcast_state(room_code)
+                except ValueError as e:
+                    await websocket.send_json({"type": "error", "message": str(e)})
 
     except WebSocketDisconnect:
         if player_id is not None:
