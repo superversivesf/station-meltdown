@@ -36,6 +36,13 @@ import websockets
 BACKEND_HOST = "127.0.0.1"
 BACKEND_PORT = int(os.environ.get("E2E_PORT", "8001"))
 BASE_WS = f"ws://{BACKEND_HOST}:{BACKEND_PORT}/ws"
+# Short-timer backend runs on a separate port so it can coexist with the
+# session-scoped `backend` fixture (which holds BACKEND_PORT for the whole
+# suite). Without this, `short_backend`'s start_backend() sees the port
+# occupied and returns None, leaving test_timer_auto_resolves to connect to
+# the 45s backend and time out.
+SHORT_BACKEND_PORT = BACKEND_PORT + 1
+SHORT_BASE_WS = f"ws://{BACKEND_HOST}:{SHORT_BACKEND_PORT}/ws"
 PLAYER_NAMES = ["Alice", "Bob", "Carol", "Dave"]
 
 # Short action phase for timer tests; default matches engine default.
@@ -50,9 +57,9 @@ def port_free(host: str, port: int) -> bool:
         return s.connect_ex((host, port)) != 0
 
 
-def start_backend(seconds: str = "45") -> subprocess.Popen | None:
+def start_backend(seconds: str = "45", port: int = BACKEND_PORT) -> subprocess.Popen | None:
     """Start backend if port is free; returns proc or None if already up."""
-    if not port_free(BACKEND_HOST, BACKEND_PORT):
+    if not port_free(BACKEND_HOST, port):
         return None
     env = {
         **os.environ,
@@ -65,7 +72,7 @@ def start_backend(seconds: str = "45") -> subprocess.Popen | None:
     proc = subprocess.Popen(
         [
             sys.executable, "-m", "uvicorn", "main:app",
-            "--host", BACKEND_HOST, "--port", str(BACKEND_PORT),
+            "--host", BACKEND_HOST, "--port", str(port),
         ],
         cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
         stdout=subprocess.DEVNULL,
@@ -73,7 +80,7 @@ def start_backend(seconds: str = "45") -> subprocess.Popen | None:
         env=env,
     )
     for _ in range(50):
-        if not port_free(BACKEND_HOST, BACKEND_PORT):
+        if not port_free(BACKEND_HOST, port):
             return proc
         time.sleep(0.1)
     proc.terminate()
@@ -94,15 +101,16 @@ def stop_backend(proc: subprocess.Popen | None) -> None:
 # Client helper
 # ---------------------------------------------------------------------------
 class Client:
-    def __init__(self, name: str, room_code: str):
+    def __init__(self, name: str, room_code: str, ws_base: str = BASE_WS):
         self.name = name
         self.room_code = room_code
+        self.ws_base = ws_base
         self.ws: websockets.WebSocketClientProtocol | None = None
         self.player_id: str | None = None
         self.last_state: dict | None = None
 
     async def connect(self) -> None:
-        self.ws = await websockets.connect(f"{BASE_WS}/{self.room_code}")
+        self.ws = await websockets.connect(f"{self.ws_base}/{self.room_code}")
 
     async def send(self, msg: dict) -> None:
         assert self.ws is not None
@@ -187,13 +195,13 @@ def backend():
 
 @pytest.fixture(scope="session")
 def short_backend():
-    proc = start_backend("2")
+    proc = start_backend("2", port=SHORT_BACKEND_PORT)
     yield proc
     stop_backend(proc)
 
 
-async def join_room(room_code: str, names: list[str]) -> list[Client]:
-    clients = [Client(n, room_code) for n in names]
+async def join_room(room_code: str, names: list[str], ws_base: str = BASE_WS) -> list[Client]:
+    clients = [Client(n, room_code, ws_base=ws_base) for n in names]
     for c in clients:
         await c.connect()
     for c in clients:
@@ -666,7 +674,7 @@ async def test_life_support_zero_downs_crew(backend):
 async def test_timer_auto_resolves(short_backend):
     """Timer auto-resolves the round when deadline passes (no manual resolve)."""
     room_code = "TMR01"
-    clients = await join_room(room_code, PLAYER_NAMES)
+    clients = await join_room(room_code, PLAYER_NAMES, ws_base=SHORT_BASE_WS)
     try:
         host = find_host(clients)
         state = await start_game(host, clients)
@@ -890,8 +898,10 @@ async def test_loss_in_finale(backend):
 async def test_carry_with_two_carriers(backend):
     """CARRY with 2 carriers advances a downed player's escape_track.
 
-    Down a player deliberately via debug hook, reach finale, then carry
-    them with 2 carriers each round.
+    Play survival with all 4 players standing (so the game reliably reaches
+    the finale), down "Dave" at the finale transition, then CARRY him with 2
+    carriers in finale round 1 and assert his escape_track advanced. If the
+    game ends before the finale, this test FAILS rather than silently passing.
     """
     room_code = "CRY01"
     clients = await join_room(room_code, PLAYER_NAMES)
@@ -899,13 +909,11 @@ async def test_carry_with_two_carriers(backend):
         host = find_host(clients)
         state = await start_game(host, clients)
 
-        # Use debug hook to down "Dave" right at the start.
-        state = await debug_down_and_drain(host, clients, "Dave")
-        dave = next(p for p in state["players"] if p["name"] == "Dave")
-        assert_true(dave["is_down"], f"[{room_code}] Dave should be downed")
-
-        # Phase 1: reach finale. Downed players stay down (we don't revive).
-        # Fix all crises with the 3 standing players.
+        # Phase 1: reach finale with optimal play. All 4 players stand, so
+        # tier-3 crises never drain systems to 0 and the game reliably reaches
+        # the finale. (Downing Dave at game start could let late-round crises
+        # drain reactor/life_support to 0 and end the game in survival,
+        # letting the test pass vacuously without ever exercising CARRY.)
         for rnd in range(1, 11):
             state = clients[0].last_state
             if state["phase"] != "survival":
@@ -927,10 +935,21 @@ async def test_carry_with_two_carriers(backend):
             if state["phase"] == "results":
                 break
 
+        # We MUST reach the finale; otherwise CARRY is never exercised and
+        # the test should FAIL rather than silently pass.
         state = clients[0].last_state
-        if state["phase"] != "finale":
-            print(f"  [{room_code}] game ended before finale (phase={state['phase']}); skipping CARRY assertion")
-            return
+        assert_eq(
+            state["phase"], "finale",
+            f"[{room_code}] must reach finale to exercise CARRY "
+            f"(got phase={state['phase']})",
+        )
+
+        # Down Dave at the finale transition (not at game start) so survival
+        # was played with all 4 standing and the finale has a downed victim to
+        # CARRY. Requires DEBUG_MODE on the backend.
+        state = await debug_down_and_drain(host, clients, "Dave")
+        dave = next(p for p in state["players"] if p["name"] == "Dave")
+        assert_true(dave["is_down"], f"[{room_code}] Dave should be downed in finale")
 
         downed = [p for p in state["players"] if p["is_down"]]
         assert_true(
