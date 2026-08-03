@@ -106,6 +106,14 @@ CRISIS_POOL: list[Crisis] = [
 ]
 
 
+def _with_variant(crisis: Crisis) -> Crisis:
+    chosen = crisis.model_copy()
+    if chosen.name_variants:
+        all_names = [chosen.name] + chosen.name_variants
+        chosen.name = random.choice(all_names)
+    return chosen
+
+
 def get_crisis_count(round_number: int) -> int:
     if round_number <= 3:
         return 1
@@ -139,11 +147,7 @@ def spawn_crises(round_number: int) -> list[Crisis]:
         if choice.system in used_systems:
             continue
         used_systems.add(choice.system)
-        # Pick a variant name if available
-        chosen = choice.model_copy()
-        if chosen.name_variants:
-            all_names = [chosen.name] + chosen.name_variants
-            chosen.name = random.choice(all_names)
+        chosen = _with_variant(choice)
         selected.append(chosen)
         pool = [c for c in pool if c.system not in used_systems]
 
@@ -156,10 +160,7 @@ def spawn_crises(round_number: int) -> list[Crisis]:
                       and c.system not in used_systems]
         if multi_pool:
             replacement = random.choice(multi_pool)
-            chosen = replacement.model_copy()
-            if chosen.name_variants:
-                all_names = [chosen.name] + chosen.name_variants
-                chosen.name = random.choice(all_names)
+            chosen = _with_variant(replacement)
             # Replace the last single-crew crisis
             selected[-1] = chosen
 

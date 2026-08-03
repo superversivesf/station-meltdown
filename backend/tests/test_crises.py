@@ -76,5 +76,7 @@ def test_spawn_uses_variants():
         crises = spawn_crises(5)
         for c in crises:
             names_seen.add(c.name)
-    # With 40 crises and variants, we should see many distinct names
-    assert len(names_seen) > 10
+    # ~30 base names in tier-{1,2} pool; variants add ~50 more distinct names.
+    # Threshold >35 distinguishes "variants work" (~80 distinct) from
+    # "variants don't work" (~30 distinct). Fails if variant logic removed.
+    assert len(names_seen) > 35
