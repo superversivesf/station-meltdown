@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
-  import { getWs } from '$lib/stores';
+  import { goto } from '$app/navigation';
+  import { getWs, gameState } from '$lib/stores';
 
   let { children } = $props();
 
@@ -28,6 +29,18 @@
     window.removeEventListener('start-game', startHandler);
     window.removeEventListener('send-action', sendActionHandler);
     getWs()?.close();
+  });
+
+  // Auto-route based on phase
+  let lastPhase: string | null = $state(null);
+  $effect(() => {
+    const phase = $gameState?.phase ?? null;
+    if (phase && phase !== lastPhase) {
+      lastPhase = phase;
+      if (phase === 'survival') goto('/play');
+      else if (phase === 'finale') goto('/finale');
+      else if (phase === 'results') goto('/results');
+    }
   });
 </script>
 
