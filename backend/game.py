@@ -161,11 +161,18 @@ class Game:
         # Advance round
         self.state.round_number += 1
         if self.state.round_number > 10:
-            # Transition to finale
+            # Transition to finale. Set a FRESH deadline for finale round 1
+            # so the timer spawned by the `resolve` handler (or any auto-
+            # resolve chain) sees a future timestamp and gives players the
+            # full 45s action window. Without this, the stale round-10
+            # deadline (now in the past) persists into finale round 1 and
+            # the timer skips its sleep, instantly resolving finale round 1
+            # with zero action window.
             self.state.phase = Phase.FINALE
             self.state.round_number = 1  # finale round 1
             self.state.active_crises = []
             self.state.collapse_bar = 0
+            self._set_action_deadline()
         else:
             self.state.active_crises = spawn_crises(self.state.round_number)
             self._set_action_deadline()

@@ -98,6 +98,15 @@ async def start_action_timer(room_code: str) -> None:
     except Exception:
         return
     await broadcast_state(room_code)
+    # Re-arm the timer for the next round. `resolve_round` sets a fresh
+    # `action_phase_deadline` for the next round (or clears it if the game
+    # ended / transitioned to results), so the next `start_action_timer`
+    # invocation will either sleep until that new deadline or exit
+    # immediately (deadline is None). The stale-deadline guard at the top
+    # of this function prevents double-resolve: if a manual resolve raced
+    # us and set yet another deadline, the new task will see the changed
+    # deadline and bow out.
+    asyncio.create_task(start_action_timer(room_code))
 
 
 @app.websocket("/ws/{room_code}")
