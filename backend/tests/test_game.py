@@ -137,9 +137,15 @@ def test_resolve_fix_with_enough_crew_stops_drain():
 
 def test_resolve_fix_with_insufficient_crew_drains():
     g = make_game_with_players(4)
-    crisis = g.state.active_crises[0]
-    if crisis.crew_required < 2:
-        return  # skip if only needs 1
+    # Force a tier-1 crisis with crew_required=2 (most tier-1 crises need 1)
+    from crises import CRISIS_POOL
+    two_crew_crisis = next(
+        c for c in CRISIS_POOL
+        if c.tier == 1 and c.crew_required == 2
+    )
+    forced = two_crew_crisis.model_copy()
+    g.state.active_crises = [forced]
+    crisis = forced
     # Only 1 player tries to FIX (needs 2)
     g.submit_action(PlayerAction(
         player_id=g.state.players[0].id,
@@ -282,3 +288,239 @@ def test_all_crew_downed_triggers_loss():
     g.resolve_round()
     assert g.state.phase == Phase.RESULTS
     assert g.state.victory is False
+
+
+# ---------------------------------------------------------------------------
+# Finale phase tests
+# ---------------------------------------------------------------------------
+
+def _make_finale_game(n=4):
+    """Create a game and transition it to finale phase for testing."""
+    g = make_game_with_players(n)
+    g.state.phase = Phase.FINALE
+    g.state.round_number = 1
+    g.state.collapse_bar = 0
+    g.state.active_crises = []
+    return g
+
+
+def test_finale_run_advances_escape_track():
+    g = _make_finale_game(4)
+    p = g.state.players[0]
+    assert p.escape_track == 0
+    g.submit_action(PlayerAction(
+        player_id=p.id,
+        action_type=ActionType.RUN,
+    ))
+    g.resolve_round()
+    assert p.escape_track == 1
+
+
+def test_finale_run_caps_escape_track_at_3():
+    g = _make_finale_game(4)
+    p = g.state.players[0]
+    p.escape_track = 2
+    g.submit_action(PlayerAction(
+        player_id=p.id,
+        action_type=ActionType.RUN,
+    ))
+    g.resolve_round()
+    assert p.escape_track == 3  # capped
+
+
+def test_finale_carry_with_two_carriers_advances_downed():
+    g = _make_finale_game(4)
+    downed = g.state.players[0]
+    downed.is_down = True
+    assert downed.escape_track == 0
+    # Two other players carry
+    g.submit_action(PlayerAction(
+        player_id=g.state.players[1].id,
+        action_type=ActionType.CARRY,
+        target_player_id=downed.id,
+    ))
+    g.submit_action(PlayerAction(
+        player_id=g.state.players[2].id,
+        action_type=ActionType.CARRY,
+        target_player_id=downed.id,
+    ))
+    g.resolve_round()
+    assert downed.escape_track == 1
+
+
+def test_finale_carry_with_one_carrier_does_not_advance():
+    g = _make_finale_game(4)
+    downed = g.state.players[0]
+    downed.is_down = True
+    # Only 1 carrier (needs 2)
+    g.submit_action(PlayerAction(
+        player_id=g.state.players[1].id,
+        action_type=ActionType.CARRY,
+        target_player_id=downed.id,
+    ))
+    g.resolve_round()
+    assert downed.escape_track == 0  # did not advance
+
+
+def test_finale_carry_caps_escape_track_at_3():
+    g = _make_finale_game(4)
+    downed = g.state.players[0]
+    downed.is_down = True
+    downed.escape_track = 2
+    g.submit_action(PlayerAction(
+        player_id=g.state.players[1].id,
+        action_type=ActionType.CARRY,
+        target_player_id=downed.id,
+    ))
+    g.submit_action(PlayerAction(
+        player_id=g.state.players[2].id,
+        action_type=ActionType.CARRY,
+        target_player_id=downed.id,
+    ))
+    g.resolve_round()
+    assert downed.escape_track == 3  # capped
+
+
+def test_finale_hold_reduces_collapse_bar():
+    g = _make_finale_game(4)
+    g.state.collapse_bar = 50
+    g.submit_action(PlayerAction(
+        player_id=g.state.players[0].id,
+        action_type=ActionType.HOLD,
+    ))
+    g.resolve_round()
+    # 50 + 34 (base) - 15 (one hold) = 69
+    assert g.state.collapse_bar == 69
+
+
+def test_finale_collapse_reaching_100_triggers_end():
+    g = _make_finale_game(4)
+    g.state.collapse_bar = 68
+    # No HOLDs → 68 + 34 = 102 >= 100 → end_finale
+    for p in g.state.players:
+        g.submit_action(PlayerAction(
+            player_id=p.id,
+            action_type=ActionType.RUN,
+        ))
+    g.resolve_round()
+    assert g.state.phase == Phase.RESULTS
+    assert g.state.victory is False  # not everyone escaped
+    assert len(g.state.crew_lost) > 0
+
+
+def test_finale_collapse_reaching_100_with_one_hold_does_not_trigger():
+    g = _make_finale_game(4)
+    g.state.collapse_bar = 66
+    # One HOLD → 66 + 34 - 15 = 85 < 100 → continues
+    g.submit_action(PlayerAction(
+        player_id=g.state.players[0].id,
+        action_type=ActionType.HOLD,
+    ))
+    g.resolve_round()
+    assert g.state.phase == Phase.FINALE  # not ended
+
+
+def test_finale_all_crew_escape_triggers_win():
+    g = _make_finale_game(4)
+    # Set all players to escape_track 2, RUN to reach 3
+    for p in g.state.players:
+        p.escape_track = 2
+    for p in g.state.players:
+        g.submit_action(PlayerAction(
+            player_id=p.id,
+            action_type=ActionType.RUN,
+        ))
+    g.resolve_round()
+    assert g.state.phase == Phase.RESULTS
+    assert g.state.victory is True
+    assert len(g.state.crew_lost) == 0
+    assert len(g.state.crew_survived) == 4
+
+
+def test_finale_partial_escape():
+    g = _make_finale_game(4)
+    # Two escape, two don't
+    g.state.players[0].escape_track = 2
+    g.state.players[1].escape_track = 2
+    g.state.players[2].escape_track = 0
+    g.state.players[3].escape_track = 0
+    # Round 1: first two RUN to safety, others HOLD (collapse 0+34-30=4)
+    g.submit_action(PlayerAction(
+        player_id=g.state.players[0].id,
+        action_type=ActionType.RUN,
+    ))
+    g.submit_action(PlayerAction(
+        player_id=g.state.players[1].id,
+        action_type=ActionType.RUN,
+    ))
+    g.submit_action(PlayerAction(
+        player_id=g.state.players[2].id,
+        action_type=ActionType.HOLD,
+    ))
+    g.submit_action(PlayerAction(
+        player_id=g.state.players[3].id,
+        action_type=ActionType.HOLD,
+    ))
+    g.resolve_round()
+    assert g.state.phase == Phase.FINALE  # not over yet
+    assert g.state.round_number == 2
+    # Round 2: survivors already at 3 (capped), non-escapers HOLD
+    # collapse = 4 + 34 - 30 = 8
+    g.submit_action(PlayerAction(
+        player_id=g.state.players[0].id,
+        action_type=ActionType.RUN,
+    ))
+    g.submit_action(PlayerAction(
+        player_id=g.state.players[1].id,
+        action_type=ActionType.RUN,
+    ))
+    g.submit_action(PlayerAction(
+        player_id=g.state.players[2].id,
+        action_type=ActionType.HOLD,
+    ))
+    g.submit_action(PlayerAction(
+        player_id=g.state.players[3].id,
+        action_type=ActionType.HOLD,
+    ))
+    g.resolve_round()
+    assert g.state.phase == Phase.FINALE  # round 3
+    assert g.state.round_number == 3
+    # Round 3: same → round_number becomes 4 > 3 → end_finale (partial)
+    g.submit_action(PlayerAction(
+        player_id=g.state.players[0].id,
+        action_type=ActionType.RUN,
+    ))
+    g.submit_action(PlayerAction(
+        player_id=g.state.players[1].id,
+        action_type=ActionType.RUN,
+    ))
+    g.submit_action(PlayerAction(
+        player_id=g.state.players[2].id,
+        action_type=ActionType.HOLD,
+    ))
+    g.submit_action(PlayerAction(
+        player_id=g.state.players[3].id,
+        action_type=ActionType.HOLD,
+    ))
+    g.resolve_round()
+    assert g.state.phase == Phase.RESULTS
+    assert g.state.victory is False
+    assert g.state.partial is True
+    assert len(g.state.crew_survived) == 2
+    assert len(g.state.crew_lost) == 2
+
+
+def test_finale_round_past_3_triggers_end():
+    g = _make_finale_game(4)
+    g.state.round_number = 3
+    # Nobody escapes (all HOLD to avoid collapse)
+    for p in g.state.players:
+        g.submit_action(PlayerAction(
+            player_id=p.id,
+            action_type=ActionType.HOLD,
+        ))
+    g.resolve_round()
+    # round_number becomes 4 > 3 → end_finale
+    assert g.state.phase == Phase.RESULTS
+    assert g.state.victory is False
+    assert len(g.state.crew_lost) == 4

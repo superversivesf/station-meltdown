@@ -146,7 +146,7 @@ class Game:
             if a.action_type == ActionType.RUN:
                 player = next((p for p in self.state.players if p.id == a.player_id), None)
                 if player and not player.is_down:
-                    player.escape_track += 1
+                    player.escape_track = min(3, player.escape_track + 1)
 
         # Apply CARRY actions (need 2 carries per downed crewmate to advance +1)
         carry_groups: dict[str, list[PlayerAction]] = {}
@@ -157,11 +157,11 @@ class Game:
             if len(carriers) >= 2:
                 target = next((p for p in self.state.players if p.id == target_id), None)
                 if target and target.is_down:
-                    target.escape_track += 1
+                    target.escape_track = min(3, target.escape_track + 1)
 
         # Apply HOLD actions
         hold_count = sum(1 for a in actions if a.action_type == ActionType.HOLD)
-        self.state.collapse_bar = max(0, self.state.collapse_bar + 33 - (hold_count * 15))
+        self.state.collapse_bar = max(0, self.state.collapse_bar + 34 - (hold_count * 15))
 
         # Check if collapse hit 100%
         if self.state.collapse_bar >= 100:
