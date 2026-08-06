@@ -11,6 +11,15 @@ build/
 
 # Testing
 .pytest_cache/
+test-results/
+playwright-report/
+playwright/.cache/
+
+# Build artifacts (frontend build copied to backend for serving)
+backend/static/
+
+# Superpowers SDD workspace (scratch files, not for git)
+.superpowers/
 
 # Editor / OS
 .DS_Store
