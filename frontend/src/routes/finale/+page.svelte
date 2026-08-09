@@ -104,7 +104,7 @@
             <button onclick={() => selectedAction = 'run'} class="action-btn run">
               RUN<br><small>+1 to your escape</small>
             </button>
-            {#if $gameState.players.some(p => p.is_down && p.escape_track < 3)}
+            {#if $gameState.players.filter(p => !p.is_down && p.escape_track < 3).length >= 2 && $gameState.players.some(p => p.is_down && p.escape_track < 3)}
               <button onclick={() => selectedAction = 'carry'} class="action-btn carry">
                 CARRY<br><small>+1 to downed crewmate (needs 2)</small>
               </button>

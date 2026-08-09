@@ -17,7 +17,7 @@
       localError = 'Enter your name';
       return;
     }
-    const ws = new GameWebSocket(roomCode.toUpperCase());
+    const ws = new GameWebSocket(roomCode.trim().toUpperCase());
     setWs(ws);
     ws.onMessage(handleMessage);
     ws.onStatusChange((status) => connectionStatus.set(status));

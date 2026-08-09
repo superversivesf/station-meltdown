@@ -141,6 +141,28 @@ class Game:
         player = self.get_player(action.player_id)
         if player is not None and player.is_down:
             raise ValueError("you are down and cannot take an action")
+        # Target validation — reject actions that would silently no-op.
+        if action.action_type == ActionType.FIX:
+            if not action.target_crisis_id:
+                raise ValueError("FIX requires a target_crisis_id")
+            if not any(c.id == action.target_crisis_id for c in self.state.active_crises):
+                raise ValueError("target crisis not found")
+        elif action.action_type == ActionType.REVIVE:
+            if not action.target_player_id:
+                raise ValueError("REVIVE requires a target_player_id")
+            target = self.get_player(action.target_player_id)
+            if target is None:
+                raise ValueError("target player not found")
+            if not target.is_down:
+                raise ValueError("target player is not down")
+        elif action.action_type == ActionType.CARRY:
+            if not action.target_player_id:
+                raise ValueError("CARRY requires a target_player_id")
+            target = self.get_player(action.target_player_id)
+            if target is None:
+                raise ValueError("target player not found")
+            if not target.is_down:
+                raise ValueError("target player is not down")
         # Remove any existing action from this player (replace, not duplicate)
         self.state.pending_actions = [
             a for a in self.state.pending_actions
@@ -187,6 +209,11 @@ class Game:
                     self.state.systems[s] -= 2
                     if self.state.systems[s] < 0:
                         self.state.systems[s] = 0
+            # If shields degradation pushed reactor to 0, end the game
+            # immediately — don't wait for the next round's loss check.
+            if self.state.systems[SystemName.REACTOR] == 0:
+                self._end_game(victory=False)
+                return
 
         # Apply BOLSTER actions
         for a in actions:

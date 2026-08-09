@@ -56,13 +56,17 @@ export class GameWebSocket {
       }
     };
     ws.onmessage = (event) => {
-      const msg: ServerMessage = JSON.parse(event.data);
-      if (msg.type === 'state') {
-        // Adopt the server-assigned id and remember it for reconnect.
-        this.playerId = msg.player_id;
-        window.localStorage.setItem(PLAYER_ID_KEY(this.roomCode), this.playerId);
+      try {
+        const msg: ServerMessage = JSON.parse(event.data);
+        if (msg.type === 'state') {
+          // Adopt the server-assigned id and remember it for reconnect.
+          this.playerId = msg.player_id;
+          window.localStorage.setItem(PLAYER_ID_KEY(this.roomCode), this.playerId);
+        }
+        this.listeners.forEach((fn) => fn(msg));
+      } catch {
+        // Malformed frame — ignore, don't crash the handler.
       }
-      this.listeners.forEach((fn) => fn(msg));
     };
     ws.onclose = () => {
       // Ignore close events from superseded sockets (e.g. a stale socket

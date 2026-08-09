@@ -1,7 +1,8 @@
 <script lang="ts">
-  import { gameState } from '$lib/stores';
+  import { gameState, getWs } from '$lib/stores';
 
   function playAgain() {
+    getWs()?.close();
     window.location.href = '/';
   }
 </script>
