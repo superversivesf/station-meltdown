@@ -542,16 +542,16 @@ async def test_bolster_caps_at_100(backend):
         state = await start_game(host, clients)
 
         crisis = state["active_crises"][0]
-        # Fix the crisis (assign enough players) so it doesn't drain
         needed = crisis["crew_required"]
         fixers = [c for c in clients][:needed]
         for c in fixers:
             await submit_action(c, "fix", target_crisis_id=crisis["id"])
-        # Bolster a system at 98 (we'll target reactor if it's not the crisis)
         target = "hull" if crisis["system"] == "reactor" else "reactor"
+        # Set target to 98 via debug so the bolster actually exercises the cap
+        await debug_set_system(host, target, 98)
+        for s in clients:
+            await drain_inbox(s, timeout=0.2)
         remaining = [c for c in clients][needed:]
-        # Drop the target to 98 via... we can't directly. Instead just
-        # bolster a full system (100) and verify it stays 100.
         for c in remaining:
             await submit_action(c, "bolster", target_system=target)
 

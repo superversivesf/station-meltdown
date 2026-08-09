@@ -446,4 +446,37 @@ test.describe('Station Meltdown — Full Journey Suite', () => {
 
     for (const page of pages) await page.close();
   });
+
+  test('reconnect: disconnected player is downed and revived on rejoin', async () => {
+    const names = ['R1', 'R2', 'R3', 'R4'];
+    const room = uniqueRoom();
+    const clients = await setupGame(room, names);
+
+    clients[0].start();
+    await Promise.all(clients.map((c) => c.waitForPhase('survival')));
+
+    // Disconnect player R4
+    const r4 = clients[3];
+    const r4Id = r4.playerId!;
+    r4.close();
+
+    // Wait for the disconnect broadcast — R4 should be downed
+    await clients[0].waitForState((s) => s.players.some((p) => p.id === r4Id && p.is_down));
+
+    // Reconnect with the same player_id — must reclaim slot and revive
+    const r4Rejoin = new WsClient(room);
+    await r4Rejoin.connect();
+    r4Rejoin.send({ type: 'join', name: 'R4', player_id: r4Id });
+    await r4Rejoin.waitForState((s) => {
+      const p = s.players.find((p) => p.id === r4Id);
+      return p !== undefined && !p.is_down;
+    });
+
+    // Verify no duplicate player was created
+    expect(r4Rejoin.lastState!.players.length).toBe(4);
+    expect(r4Rejoin.playerId).toBe(r4Id);
+
+    for (const client of clients) client.close();
+    r4Rejoin.close();
+  });
 });

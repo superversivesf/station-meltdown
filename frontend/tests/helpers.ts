@@ -33,11 +33,19 @@ export function getBackendUrl() {
   return `http://${BACKEND_HOST}:${BACKEND_PORT}`;
 }
 
+export interface Player {
+  id: string;
+  name: string;
+  is_host: boolean;
+  is_down: boolean;
+  escape_track: number;
+}
+
 export interface ClientState {
   phase: string;
   round_number: number;
   systems: Record<string, number>;
-  players: Array<{ id: string; name: string; is_host: boolean; is_down: boolean; escape_track: number }>;
+  players: Player[];
   active_crises: Array<{ id: string; name: string; system: string; drain_rate: number; crew_required: number }>;
   collapse_bar: number;
   victory: boolean;

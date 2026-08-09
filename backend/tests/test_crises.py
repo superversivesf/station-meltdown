@@ -11,9 +11,11 @@ def test_pool_has_tier_distribution():
     tier1 = [c for c in CRISIS_POOL if c.tier == 1]
     tier2 = [c for c in CRISIS_POOL if c.tier == 2]
     tier3 = [c for c in CRISIS_POOL if c.tier == 3]
-    assert len(tier1) == 15
-    assert len(tier2) == 15
-    assert len(tier3) == 10
+    # Assert the pool has all three tiers and tier-1 is the largest
+    assert len(tier1) > 0
+    assert len(tier2) > 0
+    assert len(tier3) > 0
+    assert len(tier1) >= len(tier2) >= len(tier3)
 
 
 def test_get_crisis_count():

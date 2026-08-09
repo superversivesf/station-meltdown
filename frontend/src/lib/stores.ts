@@ -20,6 +20,8 @@ export const playerId = writable<string | null>(null);
 export const connectionStatus = writable<'connecting' | 'connected' | 'disconnected' | 'reconnecting'>('connecting');
 export const errorMessage = writable<string | null>(null);
 
+export const actionAck = writable<number>(0);
+
 export function handleMessage(msg: ServerMessage) {
   switch (msg.type) {
     case 'state':
@@ -28,7 +30,7 @@ export function handleMessage(msg: ServerMessage) {
       errorMessage.set(null);
       break;
     case 'action_ack':
-      // Action acknowledged — could show a brief confirmation
+      actionAck.update((n) => n + 1);
       break;
     case 'error':
       errorMessage.set(msg.message);

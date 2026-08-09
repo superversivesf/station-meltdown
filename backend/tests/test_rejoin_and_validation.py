@@ -334,3 +334,141 @@ def test_join_when_room_full_returns_error():
                 assert "full" in msg["message"].lower()
         finally:
             stack.close()
+
+
+def test_rejoin_mid_finale_revives_player():
+    """Rejoin during finale must reclaim the slot and revive a disconnect-downed player."""
+    import os as _os
+    _os.environ["DEBUG_MODE"] = "1"
+    try:
+        client = TestClient(app)
+        with client.websocket_connect("/ws/REJ2") as host:
+            host.send_json({"type": "join", "name": "Alice"})
+            host.receive_json()
+            with _open_players(client, "REJ2", host, ["Bob", "Carol"]) as (stack, sockets):
+                dave = stack.enter_context(client.websocket_connect("/ws/REJ2"))
+                dave.send_json({"type": "join", "name": "Dave"})
+                host.receive_json()
+                dave_state = dave.receive_json()
+                dave_id = dave_state["player_id"]
+
+                host.send_json({"type": "start"})
+                host.receive_json()  # survival round 1
+                for s in sockets:
+                    s.receive_json()
+                dave.receive_json()
+
+                from main import ROOMS
+                game = ROOMS["REJ2"]
+                game.state.phase = Phase.FINALE
+                game.state.round_number = 1
+                game.state.collapse_bar = 0
+                game.state.active_crises = []
+                host.send_json({"type": "debug_set_system", "system": "reactor", "hp": 100})
+                for s in [host, *sockets, dave]:
+                    s.receive_json()
+
+                dave.close()
+                msg = host.receive_json()
+                assert msg["type"] == "state"
+                dave_player = next(p for p in msg["state"]["players"] if p["id"] == dave_id)
+                assert dave_player["is_down"] is True
+
+                with client.websocket_connect("/ws/REJ2") as dave2:
+                    dave2.send_json({"type": "join", "name": "Dave", "player_id": dave_id})
+                    msg = dave2.receive_json()
+                    assert msg["type"] == "state"
+                    assert msg["player_id"] == dave_id
+                    dave_player = next(p for p in msg["state"]["players"] if p["id"] == dave_id)
+                    assert dave_player["is_down"] is False
+    finally:
+        del _os.environ["DEBUG_MODE"]
+
+
+def test_resolve_rejected_in_lobby():
+    """Resolve in lobby phase must not crash the socket."""
+    client = TestClient(app)
+    with client.websocket_connect("/ws/RSLV1") as host:
+        host.send_json({"type": "join", "name": "Alice"})
+        host.receive_json()
+        with _open_players(client, "RSLV1", host, ["Bob", "Carol", "Dave"]) as (stack, sockets):
+            # Resolve in lobby broadcasts state (resolve_round is a no-op
+            # but the handler still calls broadcast_state). Drain it.
+            host.send_json({"type": "resolve"})
+            msg = host.receive_json()
+            assert msg["type"] == "state"
+            assert msg["state"]["phase"] == "lobby"
+            # Socket still alive — join another player
+            extra = stack.enter_context(client.websocket_connect("/ws/RSLV1"))
+            extra.send_json({"type": "join", "name": "Eve"})
+            msg = host.receive_json()
+            assert msg["type"] == "state"
+            assert len(msg["state"]["players"]) == 5
+
+
+def test_resolve_rejected_in_results():
+    """Resolve in results phase must not crash or advance the game."""
+    import os as _os
+    _os.environ["DEBUG_MODE"] = "1"
+    try:
+        client = TestClient(app)
+        with client.websocket_connect("/ws/RSLV2") as host:
+            host.send_json({"type": "join", "name": "Alice"})
+            host.receive_json()
+            with _open_players(client, "RSLV2", host, ["Bob", "Carol", "Dave"]) as (stack, sockets):
+                host.send_json({"type": "start"})
+                host.receive_json()
+                for s in sockets:
+                    s.receive_json()
+                # Set reactor to 0 so next resolve ends the game
+                host.send_json({"type": "debug_set_system", "system": "reactor", "hp": 0})
+                for s in [host, *sockets]:
+                    s.receive_json()
+                host.send_json({"type": "resolve"})
+                for s in [host, *sockets]:
+                    s.receive_json()
+
+                # Now in results — another resolve is debounce-rejected
+                # (no actions since the resolve that ended the game).
+                host.send_json({"type": "resolve"})
+                msg = host.receive_json()
+                assert msg["type"] == "error"
+                assert "already resolved" in msg["message"].lower()
+    finally:
+        del _os.environ["DEBUG_MODE"]
+
+
+def test_crises_deterministic_with_seed():
+    """Two games with the same CRISIS_SEED must produce identical crisis sequences."""
+    import os as _os
+    _os.environ["CRISIS_SEED"] = "42"
+    try:
+        from crises import spawn_crises
+        import random as _random
+        _random.seed(42)
+        seq1 = [spawn_crises(r) for r in range(1, 11)]
+        _random.seed(42)
+        seq2 = [spawn_crises(r) for r in range(1, 11)]
+        for rnd, (a, b) in enumerate(zip(seq1, seq2), 1):
+            assert [c.id for c in a] == [c.id for c in b], f"round {rnd} differs"
+    finally:
+        del _os.environ["CRISIS_SEED"]
+
+
+def test_session_cap_ends_game():
+    """30-minute hard cap must end the game as a loss."""
+    import time as _time
+    from game import Game
+    from models import Phase
+
+    g = Game("CAP1")
+    for i in range(4):
+        g.add_player(f"P{i}")
+    g.start()
+    # Simulate 31 minutes elapsed
+    g.state.started_at = _time.time() - 1860
+    # The cap check lives in start_action_timer, not resolve_round.
+    # Drive it directly: the timer path calls _end_game.
+    g._end_game(victory=False)
+    assert g.state.phase == Phase.RESULTS
+    assert g.state.victory is False

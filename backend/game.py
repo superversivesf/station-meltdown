@@ -233,12 +233,14 @@ class Game:
                     if target and target.is_down:
                         target.is_down = False
 
-        # Down a crew member if life support is at 0
+        # Down crew members if life support is at 0 (escalating: 2 per round)
         if self.state.systems[SystemName.LIFE_SUPPORT] == 0:
             standing = [p for p in self.state.players if not p.is_down]
-            if standing:
-                victim = random.choice(standing)
-                victim.is_down = True
+            for _ in range(min(2, len(standing))):
+                if standing:
+                    victim = random.choice(standing)
+                    victim.is_down = True
+                    standing.remove(victim)
 
         # Check loss conditions
         if self.state.systems[SystemName.REACTOR] == 0:
