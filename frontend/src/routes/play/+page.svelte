@@ -77,11 +77,50 @@
       }
     });
     window.dispatchEvent(event);
-    selectedAction = null;
-    selectedSystem = null;
-    selectedCrisisId = null;
-    selectedPlayerId = null;
+    // Keep the selection until the server acks (or errors) — a state
+    // broadcast arriving between submit and ack must not wipe the pick.
+    // The ack/error arrives via the store; see the $effect below.
+    submitted = true;
   }
+
+  // Clear the selection once the server has accepted the action (it shows
+  // up in pending_actions) or rejected it with an error. Until then,
+  // incoming state broadcasts leave the picker untouched.
+  let submitted = $state(false);
+  $effect(() => {
+    if (!submitted) return;
+    if ($errorMessage) {
+      submitted = false;
+      selectedAction = null;
+      selectedSystem = null;
+      selectedCrisisId = null;
+      selectedPlayerId = null;
+      return;
+    }
+    const accepted = $gameState?.pending_actions.some(
+      (a) => a.player_id === $myPlayer?.id
+    );
+    if (accepted) {
+      submitted = false;
+      selectedAction = null;
+      selectedSystem = null;
+      selectedCrisisId = null;
+      selectedPlayerId = null;
+    }
+  });
+
+  // If the chosen crisis disappears (resolved server-side), drop the stale
+  // selection instead of rendering a blank confirm panel.
+  $effect(() => {
+    if (selectedAction === 'fix' && selectedCrisisId) {
+      const stillThere = $gameState?.active_crises.some((c) => c.id === selectedCrisisId);
+      if (stillThere === false) {
+        selectedAction = null;
+        selectedCrisisId = null;
+        selectedSystem = null;
+      }
+    }
+  });
 </script>
 
 <div class="container">

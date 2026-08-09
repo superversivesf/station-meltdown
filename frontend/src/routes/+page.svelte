@@ -27,6 +27,9 @@
         clearInterval(checkConnected);
         ws.join(name.trim());
         goto('/lobby');
+      } else if ($connectionStatus === 'disconnected') {
+        // Server unreachable — stop polling so the interval can't leak.
+        clearInterval(checkConnected);
       }
     }, 100);
   }

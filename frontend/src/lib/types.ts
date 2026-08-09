@@ -53,7 +53,7 @@ export type ServerMessage =
   | { type: 'error'; message: string };
 
 export type ClientMessage =
-  | { type: 'join'; name: string }
+  | { type: 'join'; name: string; player_id?: string }
   | { type: 'start' }
   | { type: 'action'; action_type: ActionType; target_system?: SystemName; target_crisis_id?: string; target_player_id?: string }
   | { type: 'resolve' };

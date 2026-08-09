@@ -12,6 +12,18 @@ class Game:
 
     def __init__(self, room_code: str):
         self.state = GameState(room_code=room_code)
+        # Wall-clock time of the last resolve_round() call. The manual
+        # resolve handler checks this to reject a resolve that races the
+        # auto-timer (or a double-click) — otherwise the fresh round gets
+        # resolved instantly and players lose an action window. The auto-timer
+        # itself does NOT check it (short-deadline test mode must still
+        # advance).
+        self.last_resolve_at: float = 0.0
+        # Number of actions submitted since the last resolve. A resolve that
+        # follows the previous one within the debounce window is only a
+        # double-click / timer race if NOBODY has acted on the fresh round
+        # yet — a host resolving quickly after players acted is legitimate.
+        self.actions_since_resolve: int = 0
 
     def get_state(self) -> GameState:
         return self.state
@@ -29,6 +41,43 @@ class Game:
         )
         self.state.players.append(player)
         return player
+
+    def get_player(self, player_id: str) -> Player | None:
+        for p in self.state.players:
+            if p.id == player_id:
+                return p
+        return None
+
+    def rejoin_player(self, player_id: str | None, name: str) -> Player:
+        """Reclaim a player's slot on reconnect, or join fresh.
+
+        A reconnecting client sends the player_id it received on first join.
+        If that player still exists, reuse it (clearing any disconnect-induced
+        down) instead of creating a duplicate. If the id is unknown/missing,
+        fall through to a normal join (a new player). In a started game the
+        fall-through raises ValueError (add_player's lobby guard), which the
+        WS handler surfaces to the client instead of letting it crash the
+        socket.
+        """
+        if player_id:
+            existing = self.get_player(player_id)
+            if existing is not None:
+                if existing.disconnect_down:
+                    existing.disconnect_down = False
+                    existing.is_down = False
+                return existing
+        return self.add_player(name)
+
+    def remove_player(self, player_id: str) -> None:
+        """Drop a player entirely (lobby disconnect — no game state yet)."""
+        self.state.players = [p for p in self.state.players if p.id != player_id]
+
+    def promote_next_host(self) -> None:
+        """Give host duties to the first remaining non-host player."""
+        for p in self.state.players:
+            if not p.is_host:
+                p.is_host = True
+                return
 
     def is_host(self, player_id: str) -> bool:
         for p in self.state.players:
@@ -80,14 +129,29 @@ class Game:
     def submit_action(self, action: PlayerAction) -> None:
         if self.state.phase != Phase.SURVIVAL and self.state.phase != Phase.FINALE:
             raise ValueError("can only submit actions during survival or finale")
+        # Phase-appropriate action types — reject off-phase actions from
+        # modified clients (they'd otherwise silently consume the slot).
+        if self.state.phase == Phase.SURVIVAL:
+            allowed = (ActionType.FIX, ActionType.BOLSTER, ActionType.REVIVE)
+        else:
+            allowed = (ActionType.RUN, ActionType.CARRY, ActionType.HOLD)
+        if action.action_type not in allowed:
+            raise ValueError(f"{action.action_type} is not allowed in {self.state.phase} phase")
+        # Downed players can't act.
+        player = self.get_player(action.player_id)
+        if player is not None and player.is_down:
+            raise ValueError("you are down and cannot take an action")
         # Remove any existing action from this player (replace, not duplicate)
         self.state.pending_actions = [
             a for a in self.state.pending_actions
             if a.player_id != action.player_id
         ]
         self.state.pending_actions.append(action)
+        self.actions_since_resolve += 1
 
     def resolve_round(self) -> None:
+        self.last_resolve_at = time.time()
+        self.actions_since_resolve = 0
         if self.state.phase == Phase.SURVIVAL:
             self._resolve_survival_round()
         elif self.state.phase == Phase.FINALE:
@@ -253,6 +317,3 @@ class Game:
             self.state.crew_survived = []
             self.state.crew_lost = [p.id for p in self.state.players]
         self.state.phase = Phase.RESULTS
-
-    def tick(self) -> None:
-        self.resolve_round()

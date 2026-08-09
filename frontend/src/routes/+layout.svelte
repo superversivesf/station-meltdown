@@ -31,7 +31,10 @@
     getWs()?.close();
   });
 
-  // Auto-route based on phase
+  // Auto-route based on phase. Fires on the FIRST non-null phase too (not
+  // just on phase changes) because lastPhase starts null — so a reload
+  // mid-game on /play while the game is in finale/results redirects to the
+  // right screen on the first state broadcast.
   let lastPhase: string | null = $state(null);
   $effect(() => {
     const phase = $gameState?.phase ?? null;

@@ -1,16 +1,32 @@
 import asyncio
+import logging
 import os
 import time
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
+from pydantic import ValidationError
 
 from game import Game
 from models import PlayerAction, ActionType, Phase
+
+logger = logging.getLogger("station")
 
 app = FastAPI()
 
 # In-memory registry of active games: room_code -> Game
 ROOMS: dict[str, Game] = {}
+
+# Room lifecycle: how long an empty/finished room stays in memory before being
+# purged. Bounds memory usage and lets stale 4-char room codes be reused for a
+# fresh game after the TTL.
+ROOM_CLEANUP_SECONDS = 600  # 10 minutes
+# Minimum gap (seconds) between manual resolves. Blocks double-clicks and a
+# host resolve racing the auto-timer from skipping a whole action window.
+RESOLVE_DEBOUNCE_SECONDS = 1.0
+
+# One auto-resolve timer task per room. Re-spawning cancels the previous task
+# so concurrent timers can never double-resolve or skip a round.
+ROOM_TIMERS: dict[str, asyncio.Task] = {}
 
 
 class ConnectionManager:
@@ -22,13 +38,22 @@ class ConnectionManager:
     def register(self, room_code: str, player_id: str, websocket: WebSocket) -> None:
         self.connections.setdefault(room_code, {})[player_id] = websocket
 
-    def disconnect(self, room_code: str, player_id: str) -> None:
+    def disconnect(self, room_code: str, player_id: str, websocket: WebSocket) -> bool:
+        """Unregister a socket; returns True if it was the active one.
+
+        Stale sockets are ignored: if a player reconnected on a new socket,
+        the old socket's disconnect must not unregister (or down) the fresh
+        one.
+        """
         room = self.connections.get(room_code)
         if room is None:
-            return
+            return False
+        if room.get(player_id) is not websocket:
+            return False
         room.pop(player_id, None)
         if not room:
             del self.connections[room_code]
+        return True
 
     def room(self, room_code: str) -> dict[str, WebSocket]:
         return self.connections.get(room_code, {})
@@ -56,7 +81,30 @@ async def broadcast_state(room_code: str) -> None:
                 "player_id": player_id,
             })
         except Exception:
-            manager.disconnect(room_code, player_id)
+            manager.disconnect(room_code, player_id, ws)
+
+
+async def schedule_room_cleanup(room_code: str) -> None:
+    """Fire-and-forget: purge a room after a TTL if nobody has reconnected.
+
+    Called when a room's last socket disconnects or a game reaches results.
+    A player rejoining within the TTL keeps the room alive (their new socket
+    makes manager.room() non-empty, so the purge is skipped).
+    """
+    await asyncio.sleep(ROOM_CLEANUP_SECONDS)
+    if not manager.room(room_code):
+        ROOMS.pop(room_code, None)
+        prev = ROOM_TIMERS.pop(room_code, None)
+        if prev is not None and not prev.done():
+            prev.cancel()
+
+
+def maybe_schedule_cleanup(room_code: str) -> None:
+    """Schedule room purge once the game has reached results."""
+    game = ROOMS.get(room_code)
+    if game is None or game.state.phase != Phase.RESULTS:
+        return
+    asyncio.create_task(schedule_room_cleanup(room_code))
 
 
 async def start_action_timer(room_code: str) -> None:
@@ -98,6 +146,7 @@ async def start_action_timer(room_code: str) -> None:
     if state.started_at is not None and (time.time() - state.started_at) >= 1800:
         game._end_game(victory=False)
         await broadcast_state(room_code)
+        maybe_schedule_cleanup(room_code)
         return
     try:
         game.resolve_round()
@@ -112,7 +161,20 @@ async def start_action_timer(room_code: str) -> None:
     # of this function prevents double-resolve: if a manual resolve raced
     # us and set yet another deadline, the new task will see the changed
     # deadline and bow out.
-    asyncio.create_task(start_action_timer(room_code))
+    arm_action_timer(room_code)
+
+
+def arm_action_timer(room_code: str) -> None:
+    """Spawn (or replace) the room's single auto-resolve timer task.
+
+    Cancelling the previous task before spawning a new one guarantees at
+    most one timer per room, so a manual resolve racing the auto-timer can
+    never leave two timers that both fire and double-resolve a round.
+    """
+    prev = ROOM_TIMERS.pop(room_code, None)
+    if prev is not None and not prev.done():
+        prev.cancel()
+    ROOM_TIMERS[room_code] = asyncio.create_task(start_action_timer(room_code))
 
 
 @app.websocket("/ws/{room_code}")
@@ -122,7 +184,15 @@ async def websocket_endpoint(websocket: WebSocket, room_code: str):
     await websocket.accept()
     try:
         while True:
-            data = await websocket.receive_json()
+            try:
+                data = await websocket.receive_json()
+            except (ValueError, TypeError):
+                # Malformed JSON frame — surface an error, keep the socket open.
+                await websocket.send_json({"type": "error", "message": "invalid message"})
+                continue
+            if not isinstance(data, dict):
+                await websocket.send_json({"type": "error", "message": "invalid message"})
+                continue
             msg_type = data.get("type")
 
             if msg_type == "join":
@@ -130,7 +200,13 @@ async def websocket_endpoint(websocket: WebSocket, room_code: str):
                 if room_code not in ROOMS:
                     ROOMS[room_code] = Game(room_code)
                 game = ROOMS[room_code]
-                player = game.add_player(name)
+                try:
+                    player = game.rejoin_player(data.get("player_id"), name)
+                except ValueError as e:
+                    # Room full / game already in progress — tell the client
+                    # instead of letting the exception kill the socket.
+                    await websocket.send_json({"type": "error", "message": str(e)})
+                    continue
                 player_id = player.id
                 manager.register(room_code, player_id, websocket)
                 await broadcast_state(room_code)
@@ -150,7 +226,7 @@ async def websocket_endpoint(websocket: WebSocket, room_code: str):
                 try:
                     game.start()
                     await broadcast_state(room_code)
-                    asyncio.create_task(start_action_timer(room_code))
+                    arm_action_timer(room_code)
                 except ValueError as e:
                     await websocket.send_json({"type": "error", "message": str(e)})
 
@@ -161,14 +237,25 @@ async def websocket_endpoint(websocket: WebSocket, room_code: str):
                         {"type": "error", "message": "Not in a game"}
                     )
                     continue
-                action = PlayerAction(
-                    player_id=player_id,
-                    action_type=ActionType(data["action_type"]),
-                    target_system=data.get("target_system"),
-                    target_crisis_id=data.get("target_crisis_id"),
-                    target_player_id=data.get("target_player_id"),
-                )
-                game.submit_action(action)
+                try:
+                    action_type = ActionType(data.get("action_type"))
+                except ValueError:
+                    await websocket.send_json(
+                        {"type": "error", "message": "invalid action_type"}
+                    )
+                    continue
+                try:
+                    action = PlayerAction(
+                        player_id=player_id,
+                        action_type=action_type,
+                        target_system=data.get("target_system"),
+                        target_crisis_id=data.get("target_crisis_id"),
+                        target_player_id=data.get("target_player_id"),
+                    )
+                    game.submit_action(action)
+                except (ValueError, ValidationError) as e:
+                    await websocket.send_json({"type": "error", "message": str(e)})
+                    continue
                 await websocket.send_json({"type": "action_ack"})
 
             elif msg_type == "resolve":
@@ -180,13 +267,24 @@ async def websocket_endpoint(websocket: WebSocket, room_code: str):
                         {"type": "error", "message": "Only host can resolve"}
                     )
                     continue
+                if time.time() - game.last_resolve_at < RESOLVE_DEBOUNCE_SECONDS:
+                    # A double-click or a resolve racing the auto-timer would
+                    # otherwise advance a second round instantly. Only reject
+                    # when nobody has acted on the fresh round yet — a host
+                    # resolving quickly after players submitted is legitimate.
+                    if game.actions_since_resolve == 0:
+                        await websocket.send_json(
+                            {"type": "error", "message": "Round was already resolved"}
+                        )
+                        continue
                 try:
                     game.resolve_round()
                     await broadcast_state(room_code)
                     # If the game is still in progress, arm the next round's
                     # auto-resolve timer. No-op if no deadline was set (game
                     # ended / transitioned to results).
-                    asyncio.create_task(start_action_timer(room_code))
+                    arm_action_timer(room_code)
+                    maybe_schedule_cleanup(room_code)
                 except ValueError as e:
                     await websocket.send_json({"type": "error", "message": str(e)})
 
@@ -219,15 +317,34 @@ async def websocket_endpoint(websocket: WebSocket, room_code: str):
                 await broadcast_state(room_code)
 
     except WebSocketDisconnect:
-        if player_id is not None:
-            manager.disconnect(room_code, player_id)
+        if player_id is not None and manager.disconnect(room_code, player_id, websocket):
             game = ROOMS.get(room_code)
-            if game is not None and game.state.phase in (Phase.SURVIVAL, Phase.FINALE):
-                for p in game.state.players:
-                    if p.id == player_id:
-                        p.is_down = True
-                        break
+            if game is not None:
+                phase = game.state.phase
+                if phase == Phase.LOBBY:
+                    # No game state to preserve — drop the player entirely so
+                    # a reconnect starts fresh (no ghost hogging a slot or
+                    # blocking the game). If the host just left, someone must
+                    # be able to start the game.
+                    if game.get_player(player_id) is not None:
+                        game.remove_player(player_id)
+                        if not any(p.is_host for p in game.state.players):
+                            game.promote_next_host()
+                elif phase in (Phase.SURVIVAL, Phase.FINALE):
+                    p = game.get_player(player_id)
+                    if p is not None:
+                        if p.is_host:
+                            # Someone must still be able to start/resolve.
+                            game.promote_next_host()
+                        if not p.is_down:
+                            # Spec: disconnect = downed. Record that the down
+                            # was caused by the disconnect so a rejoin can
+                            # undo it without reviving game-downed players.
+                            p.is_down = True
+                            p.disconnect_down = True
                 await broadcast_state(room_code)
+            # Reap empty/stale rooms after a TTL (idempotent).
+            asyncio.create_task(schedule_room_cleanup(room_code))
 
 
 # Mount static SPA in production (built by Dockerfile)

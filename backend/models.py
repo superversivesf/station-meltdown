@@ -46,6 +46,11 @@ class Player(BaseModel):
     name: str
     is_host: bool = False
     is_down: bool = False
+    # True when this player was downed purely because their WebSocket
+    # disconnected (spec: disconnect = downed). Cleared on rejoin so a
+    # reconnect brings them back without reviving players who were downed
+    # by game mechanics (life support / finale).
+    disconnect_down: bool = False
     escape_track: int = 0  # 0-3, reaches 3 = safe in pods
 
 

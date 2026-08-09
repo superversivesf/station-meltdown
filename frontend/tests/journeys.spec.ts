@@ -9,7 +9,6 @@ import {
   type ClientState,
 } from './helpers';
 
-const ROOM_PREFIX = 'J';
 let roomCounter = 0;
 
 function uniqueRoom(): string {
@@ -61,14 +60,15 @@ test.describe('Station Meltdown — Full Journey Suite', () => {
 
   test('happy path: 4 players join via UI and win the game', async ({ browser }) => {
     const names = ['Alice', 'Bob', 'Carol', 'Dave'];
+    const room = uniqueRoom();
     const pages: Page[] = [];
 
-    // Open 4 browser contexts and join via the UI
+    // Open 4 browser contexts and join via the UI (all into the SAME room)
     for (let i = 0; i < 4; i++) {
       const context = await browser.newContext();
       const page = await context.newPage();
       pages.push(page);
-      await joinViaUI(page, uniqueRoom(), names[i]);
+      await joinViaUI(page, room, names[i]);
     }
 
     // Verify all 4 players are in the lobby
@@ -420,24 +420,29 @@ test.describe('Station Meltdown — Full Journey Suite', () => {
   test('UI renders: play screen shows systems and crisis cards', async ({ browser }) => {
     // Use 4 browser players to ensure the game starts cleanly
     const names = ['S1', 'S2', 'S3', 'S4'];
+    const room = uniqueRoom();
     const pages: Page[] = [];
 
     for (let i = 0; i < 4; i++) {
       const context = await browser.newContext();
       const page = await context.newPage();
       pages.push(page);
-      await joinViaUI(page, uniqueRoom(), names[i]);
+      await joinViaUI(page, room, names[i]);
     }
 
     // Host starts
     await pages[0].click('button:has-text("Start Game")');
     await Promise.all(pages.map((p) => waitForPlayScreen(p)));
 
-    // Verify station systems are visible on first player's screen
-    await expect(pages[0].locator('text=Reactor')).toBeVisible({ timeout: 5000 });
-    await expect(pages[0].locator('text=Life Support')).toBeVisible({ timeout: 5000 });
-    await expect(pages[0].locator('text=Hull')).toBeVisible({ timeout: 5000 });
-    await expect(page.locator('h2:has-text("Active Crises")')).toBeVisible({ timeout: 5000 });
+    // Verify station systems are visible on first player's screen (scoped to
+    // the systems grid — a bare `text=Reactor` also matches the crisis card
+    // and the bolster button, which fails strict-mode locator resolution).
+    const systems = pages[0].locator('section.systems .sys-name');
+    await expect(systems).toHaveCount(6, { timeout: 5000 });
+    await expect(systems.filter({ hasText: 'Reactor' })).toBeVisible();
+    await expect(systems.filter({ hasText: 'Life Support' })).toBeVisible();
+    await expect(systems.filter({ hasText: 'Hull' })).toBeVisible();
+    await expect(pages[0].locator('section.crises h2:has-text("Active Crises")')).toBeVisible({ timeout: 5000 });
 
     for (const page of pages) await page.close();
   });

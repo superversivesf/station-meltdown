@@ -1,6 +1,28 @@
+import contextlib
 import pytest
 from fastapi.testclient import TestClient
 from main import app
+
+
+def _open_players(client, room_code, host_ws, names):
+    """Join `names` to a lobby via persistent sockets.
+
+    A bare ``with client.websocket_connect(...)`` block closes the socket on
+    block exit, and a lobby disconnect now REMOVES the player from the room.
+    These sockets are kept open (via an ExitStack the caller closes at test
+    end) so the players remain present for the duration of the test.
+    """
+    stack = contextlib.ExitStack()
+    try:
+        for name in names:
+            ws = stack.enter_context(client.websocket_connect(f"/ws/{room_code}"))
+            ws.send_json({"type": "join", "name": name})
+            host_ws.receive_json()  # host sees the new player
+            ws.receive_json()       # joiner sees the room
+        return stack
+    except BaseException:
+        stack.close()
+        raise
 
 
 def test_health_endpoint():
@@ -60,17 +82,13 @@ def test_websocket_start_success():
     with client.websocket_connect("/ws/TEST4") as ws1:
         ws1.send_json({"type": "join", "name": "Alice"})
         ws1.receive_json()
-        for i in range(3):
-            with client.websocket_connect("/ws/TEST4") as ws_other:
-                ws_other.send_json({"type": "join", "name": f"Player{i}"})
-                ws1.receive_json()
-                ws_other.receive_json()
-        # Host starts
-        ws1.send_json({"type": "start"})
-        msg = ws1.receive_json()
-        assert msg["type"] == "state"
-        assert msg["state"]["phase"] == "survival"
-        assert msg["state"]["round_number"] == 1
+        with _open_players(client, "TEST4", ws1, ["Player0", "Player1", "Player2"]):
+            # Host starts
+            ws1.send_json({"type": "start"})
+            msg = ws1.receive_json()
+            assert msg["type"] == "state"
+            assert msg["state"]["phase"] == "survival"
+            assert msg["state"]["round_number"] == 1
 
 
 def test_action_phase_sets_deadline():
@@ -79,16 +97,12 @@ def test_action_phase_sets_deadline():
     with client.websocket_connect("/ws/TIMER1") as ws:
         ws.send_json({"type": "join", "name": "Alice"})
         ws.receive_json()
-        for i in range(3):
-            with client.websocket_connect("/ws/TIMER1") as ws_other:
-                ws_other.send_json({"type": "join", "name": f"P{i}"})
-                ws.receive_json()
-                ws_other.receive_json()
-        ws.send_json({"type": "start"})
-        msg = ws.receive_json()
-        assert msg["state"]["phase"] == "survival"
-        assert msg["state"]["action_phase_deadline"] is not None
-        assert msg["state"]["action_phase_deadline"] > 0
+        with _open_players(client, "TIMER1", ws, ["P0", "P1", "P2"]):
+            ws.send_json({"type": "start"})
+            msg = ws.receive_json()
+            assert msg["state"]["phase"] == "survival"
+            assert msg["state"]["action_phase_deadline"] is not None
+            assert msg["state"]["action_phase_deadline"] > 0
 
 
 def test_afk_player_defaults_to_bolster():
@@ -98,25 +112,21 @@ def test_afk_player_defaults_to_bolster():
     with client.websocket_connect("/ws/TIMER2") as ws:
         ws.send_json({"type": "join", "name": "Alice"})
         ws.receive_json()
-        for i in range(3):
-            with client.websocket_connect("/ws/TIMER2") as ws_other:
-                ws_other.send_json({"type": "join", "name": f"P{i}"})
-                ws.receive_json()
-                ws_other.receive_json()
-        ws.send_json({"type": "start"})
-        ws.receive_json()
-        # Only one player submits an action
-        ws.send_json({
-            "type": "action",
-            "action_type": "bolster",
-            "target_system": "shields",
-        })
-        ws.receive_json()  # action_ack
-        # Resolve — 3 players didn't act, should default to bolster
-        ws.send_json({"type": "resolve"})
-        msg = ws.receive_json()
-        # No crash, state advanced
-        assert msg["state"]["round_number"] == 2
+        with _open_players(client, "TIMER2", ws, ["P0", "P1", "P2"]):
+            ws.send_json({"type": "start"})
+            ws.receive_json()
+            # Only one player submits an action
+            ws.send_json({
+                "type": "action",
+                "action_type": "bolster",
+                "target_system": "shields",
+            })
+            ws.receive_json()  # action_ack
+            # Resolve — 3 players didn't act, should default to bolster
+            ws.send_json({"type": "resolve"})
+            msg = ws.receive_json()
+            # No crash, state advanced
+            assert msg["state"]["round_number"] == 2
 
 
 def test_action_timer_auto_resolves_on_deadline():
@@ -152,53 +162,49 @@ def test_action_timer_auto_resolves_on_deadline():
         with client.websocket_connect("/ws/TIMER3") as ws:
             ws.send_json({"type": "join", "name": "Alice"})
             ws.receive_json()
-            for i in range(3):
-                with client.websocket_connect("/ws/TIMER3") as ws_other:
-                    ws_other.send_json({"type": "join", "name": f"P{i}"})
-                    ws.receive_json()
-                    ws_other.receive_json()
+            with _open_players(client, "TIMER3", ws, ["P0", "P1", "P2"]):
 
-            # Host starts — game enters survival round 1 with a 0.5s
-            # action deadline, and the handler spawns start_action_timer.
-            ws.send_json({"type": "start"})
-            ws.receive_json()  # state: round 1
-            assert short_deadlines, "start() did not set a deadline"
+                # Host starts — game enters survival round 1 with a 0.5s
+                # action deadline, and the handler spawns start_action_timer.
+                ws.send_json({"type": "start"})
+                ws.receive_json()  # state: round 1
+                assert short_deadlines, "start() did not set a deadline"
 
-            # Wait for the background timer to fire and auto-resolve.
-            # No manual 'resolve' is sent. Starlette's sync TestClient
-            # WebSocket.receive_json() blocks until a message arrives (no
-            # timeout kwarg), so receive on a worker thread and bound the
-            # wait from the main thread.
-            import threading
-            received: list[dict] = []
-            err: list[BaseException] = []
-            done = threading.Event()
+                # Wait for the background timer to fire and auto-resolve.
+                # No manual 'resolve' is sent. Starlette's sync TestClient
+                # WebSocket.receive_json() blocks until a message arrives (no
+                # timeout kwarg), so receive on a worker thread and bound the
+                # wait from the main thread.
+                import threading
+                received: list[dict] = []
+                err: list[BaseException] = []
+                done = threading.Event()
 
-            def drain():
-                try:
-                    for _ in range(10):
-                        received.append(ws.receive_json())
-                        if received[-1].get("type") == "state" and \
-                                received[-1]["state"].get("round_number") == 2:
-                            done.set()
-                            return
-                except BaseException as e:  # noqa: BLE001
-                    err.append(e)
-                    done.set()
+                def drain():
+                    try:
+                        for _ in range(10):
+                            received.append(ws.receive_json())
+                            if received[-1].get("type") == "state" and \
+                                    received[-1]["state"].get("round_number") == 2:
+                                done.set()
+                                return
+                    except BaseException as e:  # noqa: BLE001
+                        err.append(e)
+                        done.set()
 
-            t = threading.Thread(target=drain, daemon=True)
-            t.start()
-            if not done.wait(timeout=5):
-                assert False, "auto-resolve did not advance to round 2 within 5s"
-            assert not err, f"receiver thread errored: {err}"
-            assert received, "no messages received"
-            last = received[-1]
-            assert last.get("type") == "state", f"unexpected message: {last}"
-            assert last["state"].get("round_number") == 2, \
-                f"did not reach round 2: {last}"
+                t = threading.Thread(target=drain, daemon=True)
+                t.start()
+                if not done.wait(timeout=5):
+                    assert False, "auto-resolve did not advance to round 2 within 5s"
+                assert not err, f"receiver thread errored: {err}"
+                assert received, "no messages received"
+                last = received[-1]
+                assert last.get("type") == "state", f"unexpected message: {last}"
+                assert last["state"].get("round_number") == 2, \
+                    f"did not reach round 2: {last}"
 
-            # Sanity: the timer that fired used the patched short deadline.
-            assert short_deadlines[0] <= _time.time()
+                # Sanity: the timer that fired used the patched short deadline.
+                assert short_deadlines[0] <= _time.time()
     finally:
         game_mod.Game._set_action_deadline = orig
         ROOMS.pop("TIMER3", None)
@@ -242,48 +248,44 @@ def test_action_timer_rearms_for_next_round():
         with client.websocket_connect("/ws/TIMER4") as ws:
             ws.send_json({"type": "join", "name": "Alice"})
             ws.receive_json()
-            for i in range(3):
-                with client.websocket_connect("/ws/TIMER4") as ws_other:
-                    ws_other.send_json({"type": "join", "name": f"P{i}"})
-                    ws.receive_json()
-                    ws_other.receive_json()
+            with _open_players(client, "TIMER4", ws, ["P0", "P1", "P2"]):
 
-            ws.send_json({"type": "start"})
-            ws.receive_json()  # state: round 1
+                ws.send_json({"type": "start"})
+                ws.receive_json()  # state: round 1
 
-            # Drain messages until we see round 3, with a bounded wait.
-            # Each auto-resolve should fire ~0.3s after the previous, so
-            # reaching round 3 takes ~0.6s + overhead; allow 8s margin.
-            received: list[dict] = []
-            err: list[BaseException] = []
-            done = threading.Event()
+                # Drain messages until we see round 3, with a bounded wait.
+                # Each auto-resolve should fire ~0.3s after the previous, so
+                # reaching round 3 takes ~0.6s + overhead; allow 8s margin.
+                received: list[dict] = []
+                err: list[BaseException] = []
+                done = threading.Event()
 
-            def drain():
-                try:
-                    for _ in range(30):
-                        received.append(ws.receive_json())
-                        last = received[-1]
-                        if (last.get("type") == "state"
-                                and last["state"].get("phase") == "survival"
-                                and last["state"].get("round_number") == 3):
-                            done.set()
-                            return
-                except BaseException as e:  # noqa: BLE001
-                    err.append(e)
-                    done.set()
+                def drain():
+                    try:
+                        for _ in range(30):
+                            received.append(ws.receive_json())
+                            last = received[-1]
+                            if (last.get("type") == "state"
+                                    and last["state"].get("phase") == "survival"
+                                    and last["state"].get("round_number") == 3):
+                                done.set()
+                                return
+                    except BaseException as e:  # noqa: BLE001
+                        err.append(e)
+                        done.set()
 
-            t = threading.Thread(target=drain, daemon=True)
-            t.start()
-            if not done.wait(timeout=8):
-                assert False, \
-                    "auto-resolve did not reach round 3 within 8s (no re-arm)"
-            assert not err, f"receiver thread errored: {err}"
-            assert received, "no messages received"
-            last = received[-1]
-            assert last["state"]["phase"] == "survival", \
-                f"expected survival round 3, got phase={last['state']['phase']}"
-            assert last["state"]["round_number"] == 3, \
-                f"expected round 3, got {last['state']['round_number']}"
+                t = threading.Thread(target=drain, daemon=True)
+                t.start()
+                if not done.wait(timeout=8):
+                    assert False, \
+                        "auto-resolve did not reach round 3 within 8s (no re-arm)"
+                assert not err, f"receiver thread errored: {err}"
+                assert received, "no messages received"
+                last = received[-1]
+                assert last["state"]["phase"] == "survival", \
+                    f"expected survival round 3, got phase={last['state']['phase']}"
+                assert last["state"]["round_number"] == 3, \
+                    f"expected round 3, got {last['state']['round_number']}"
     finally:
         game_mod.Game._set_action_deadline = orig_deadline
         crises_mod.spawn_crises = orig_spawn

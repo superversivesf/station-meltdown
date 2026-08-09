@@ -4,6 +4,11 @@ import type { GameWebSocket } from './websocket';
 
 let wsInstance: GameWebSocket | null = null;
 export function setWs(ws: GameWebSocket | null) {
+  // Close the previous instance so a re-join flow can't leak a live socket
+  // (and its reconnect timers) behind the new one.
+  if (wsInstance && wsInstance !== ws) {
+    wsInstance.close();
+  }
   wsInstance = ws;
 }
 export function getWs(): GameWebSocket | null {
