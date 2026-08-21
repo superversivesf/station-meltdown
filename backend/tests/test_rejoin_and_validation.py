@@ -83,8 +83,11 @@ def test_promote_next_host():
     g.add_player("Alice")  # host
     g.add_player("Bob")
     g.add_player("Carol")
+    # Simulate mid-game host disconnect: down the host, then promote
+    g.state.players[0].is_down = True
     g.promote_next_host()
-    assert g.state.players[1].is_host is True  # Bob
+    assert g.state.players[0].is_host is False  # Alice cleared
+    assert g.state.players[1].is_host is True  # Bob promoted
 
 
 def test_submit_action_wrong_phase_rejected():

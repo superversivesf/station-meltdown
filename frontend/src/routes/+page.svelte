@@ -27,9 +27,10 @@
         clearInterval(checkConnected);
         ws.join(name.trim());
         goto('/lobby');
-      } else if ($connectionStatus === 'disconnected') {
-        // Server unreachable — stop polling so the interval can't leak.
+      } else if ($connectionStatus === 'disconnected' || $connectionStatus === 'reconnecting') {
+        // Stop polling — connection failed or is stuck reconnecting.
         clearInterval(checkConnected);
+        localError = 'Could not connect to the server. Please try again.';
       }
     }, 100);
   }

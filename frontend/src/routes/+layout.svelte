@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
   import { goto } from '$app/navigation';
-  import { getWs, gameState } from '$lib/stores';
+  import { getWs, gameState, errorMessage } from '$lib/stores';
 
   let { children } = $props();
 
@@ -11,7 +11,12 @@
 
   const sendActionHandler = (e: Event) => {
     const detail = (e as CustomEvent).detail;
-    getWs()?.send({
+    const ws = getWs();
+    if (!ws) {
+      errorMessage.set('Not connected — action not sent');
+      return;
+    }
+    ws.send({
       type: 'action',
       action_type: detail.action_type,
       target_system: detail.target_system,

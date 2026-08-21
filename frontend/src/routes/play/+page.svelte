@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { gameState, myPlayer, errorMessage } from '$lib/stores';
+  import { gameState, myPlayer, errorMessage, connectionStatus } from '$lib/stores';
   import type { SystemName, ActionType, Crisis } from '$lib/types';
 
   let selectedAction = $state<ActionType | null>(null);
@@ -89,6 +89,11 @@
   let submitted = $state(false);
   $effect(() => {
     if (!submitted) return;
+    // Bail if disconnected — the action will never be acked.
+    if ($connectionStatus === 'disconnected') {
+      submitted = false;
+      return;
+    }
     if ($errorMessage) {
       submitted = false;
       selectedAction = null;
@@ -108,6 +113,14 @@
       selectedPlayerId = null;
     }
   });
+
+  function cancelAction() {
+    submitted = false;
+    selectedAction = null;
+    selectedSystem = null;
+    selectedCrisisId = null;
+    selectedPlayerId = null;
+  }
 
   // If the chosen crisis disappears (resolved server-side), drop the stale
   // selection instead of rendering a blank confirm panel.
@@ -187,19 +200,19 @@
         <div class="selected-action">
           <p>FIXing: {$gameState.active_crises.find(c => c.id === selectedCrisisId)?.name}</p>
           <button onclick={submitAction} class="submit">Confirm FIX</button>
-          <button onclick={() => { selectedAction = null; selectedCrisisId = null; }}>Cancel</button>
+          <button onclick={cancelAction}>Cancel</button>
         </div>
       {:else if selectedAction === 'bolster'}
         <div class="selected-action">
           <p>BOLSTERing: {systemLabels[selectedSystem as SystemName]}</p>
           <button onclick={submitAction} class="submit">Confirm BOLSTER</button>
-          <button onclick={() => { selectedAction = null; selectedSystem = null; }}>Cancel</button>
+          <button onclick={cancelAction}>Cancel</button>
         </div>
       {:else if selectedAction === 'revive'}
         <div class="selected-action">
           <p>REVIVEing crewmate</p>
           <button onclick={submitAction} class="submit">Confirm REVIVE</button>
-          <button onclick={() => { selectedAction = null; selectedPlayerId = null; }}>Cancel</button>
+          <button onclick={cancelAction}>Cancel</button>
         </div>
       {:else}
         <div class="action-options">

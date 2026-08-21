@@ -23,7 +23,12 @@ export class GameWebSocket {
     const host = window.location.host;
     this.roomCode = roomCode.toUpperCase();
     this.url = `${protocol}//${host}/ws/${this.roomCode}`;
-    this.playerId = window.localStorage.getItem(PLAYER_ID_KEY(this.roomCode));
+    try {
+      this.playerId = window.localStorage.getItem(PLAYER_ID_KEY(this.roomCode));
+    } catch {
+      // localStorage may throw in private browsing mode — degrade gracefully.
+      this.playerId = null;
+    }
   }
 
   join(name: string): void {
@@ -58,11 +63,15 @@ export class GameWebSocket {
     ws.onmessage = (event) => {
       try {
         const msg: ServerMessage = JSON.parse(event.data);
-        if (msg.type === 'state') {
-          // Adopt the server-assigned id and remember it for reconnect.
-          this.playerId = msg.player_id;
+      if (msg.type === 'state') {
+        // Adopt the server-assigned id and remember it for reconnect.
+        this.playerId = msg.player_id;
+        try {
           window.localStorage.setItem(PLAYER_ID_KEY(this.roomCode), this.playerId);
+        } catch {
+          // localStorage may throw in private browsing mode — ignore.
         }
+      }
         this.listeners.forEach((fn) => fn(msg));
       } catch {
         // Malformed frame — ignore, don't crash the handler.

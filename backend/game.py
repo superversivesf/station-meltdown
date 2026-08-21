@@ -73,9 +73,11 @@ class Game:
         self.state.players = [p for p in self.state.players if p.id != player_id]
 
     def promote_next_host(self) -> None:
-        """Give host duties to the first remaining non-host player."""
+        """Clear all host flags then give host to the first standing player."""
         for p in self.state.players:
-            if not p.is_host:
+            p.is_host = False
+        for p in self.state.players:
+            if not p.is_down:
                 p.is_host = True
                 return
 
@@ -222,7 +224,18 @@ class Game:
                     100, self.state.systems[a.target_system] + 5
                 )
 
-        # Apply REVIVE actions
+        # Down crew members if life support is at 0 (escalating: 2 per round).
+        # Done BEFORE revive so a revived player isn't immediately re-downed
+        # in the same round — their revive action should matter.
+        if self.state.systems[SystemName.LIFE_SUPPORT] == 0:
+            standing = [p for p in self.state.players if not p.is_down]
+            for _ in range(min(2, len(standing))):
+                if standing:
+                    victim = random.choice(standing)
+                    victim.is_down = True
+                    standing.remove(victim)
+
+        # Apply REVIVE actions (after life-support downing)
         for a in actions:
             if a.action_type == ActionType.REVIVE and a.target_player_id:
                 if self.state.systems[SystemName.MED_BAY] > 0:
@@ -232,15 +245,6 @@ class Game:
                     )
                     if target and target.is_down:
                         target.is_down = False
-
-        # Down crew members if life support is at 0 (escalating: 2 per round)
-        if self.state.systems[SystemName.LIFE_SUPPORT] == 0:
-            standing = [p for p in self.state.players if not p.is_down]
-            for _ in range(min(2, len(standing))):
-                if standing:
-                    victim = random.choice(standing)
-                    victim.is_down = True
-                    standing.remove(victim)
 
         # Check loss conditions
         if self.state.systems[SystemName.REACTOR] == 0:
@@ -335,6 +339,9 @@ class Game:
         self.state.victory = len(lost) == 0
         self.state.partial = len(lost) > 0 and len(survived) > 0
         self.state.phase = Phase.RESULTS
+        self.state.pending_actions = []
+        self.state.active_crises = []
+        self.state.action_phase_deadline = None
 
     def _end_game(self, victory: bool) -> None:
         self.state.victory = victory
@@ -346,3 +353,6 @@ class Game:
             self.state.crew_survived = []
             self.state.crew_lost = [p.id for p in self.state.players]
         self.state.phase = Phase.RESULTS
+        self.state.pending_actions = []
+        self.state.active_crises = []
+        self.state.action_phase_deadline = None

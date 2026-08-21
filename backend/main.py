@@ -2,6 +2,7 @@ import asyncio
 import logging
 import os
 import time
+from contextlib import suppress
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 from pydantic import ValidationError
@@ -81,7 +82,12 @@ async def broadcast_state(room_code: str) -> None:
                 "player_id": player_id,
             })
         except Exception:
-            manager.disconnect(room_code, player_id, ws)
+            # Close the dead socket so the WS handler's WebSocketDisconnect
+            # fires and downs the player properly. Do NOT remove it from the
+            # manager here — that would prevent the disconnect handler from
+            # seeing it as the active socket and downing the player (ghost bug).
+            with suppress(Exception):
+                await ws.close()
 
 
 async def schedule_room_cleanup(room_code: str) -> None:
@@ -151,17 +157,16 @@ async def start_action_timer(room_code: str) -> None:
     try:
         game.resolve_round()
     except Exception:
-        return
+        # Log and re-arm so a transient error doesn't soft-lock the game.
+        logger.exception("resolve_round failed for room %s", room_code)
     await broadcast_state(room_code)
-    # Re-arm the timer for the next round. `resolve_round` sets a fresh
-    # `action_phase_deadline` for the next round (or clears it if the game
-    # ended / transitioned to results), so the next `start_action_timer`
-    # invocation will either sleep until that new deadline or exit
-    # immediately (deadline is None). The stale-deadline guard at the top
-    # of this function prevents double-resolve: if a manual resolve raced
-    # us and set yet another deadline, the new task will see the changed
-    # deadline and bow out.
-    arm_action_timer(room_code)
+    maybe_schedule_cleanup(room_code)
+    # Re-arm the timer for the next round — but DON'T call arm_action_timer
+    # here because that would cancel the CURRENT (self) task mid-flight.
+    # Instead, create the next task directly.
+    next_state = game.get_state()
+    if next_state.phase in (Phase.SURVIVAL, Phase.FINALE) and next_state.action_phase_deadline is not None:
+        ROOM_TIMERS[room_code] = asyncio.create_task(start_action_timer(room_code))
 
 
 def arm_action_timer(room_code: str) -> None:
@@ -261,17 +266,23 @@ async def websocket_endpoint(websocket: WebSocket, room_code: str):
             elif msg_type == "resolve":
                 game = ROOMS.get(room_code)
                 if game is None or player_id is None:
+                    await websocket.send_json(
+                        {"type": "error", "message": "Not in a game"}
+                    )
                     continue
                 if not game.is_host(player_id):
                     await websocket.send_json(
                         {"type": "error", "message": "Only host can resolve"}
                     )
                     continue
+                # 30-minute hard session cap — enforced here too so manual
+                # resolve can't bypass the cap the auto-timer enforces.
+                if game.state.started_at is not None and (time.time() - game.state.started_at) >= 1800:
+                    game._end_game(victory=False)
+                    await broadcast_state(room_code)
+                    maybe_schedule_cleanup(room_code)
+                    continue
                 if time.time() - game.last_resolve_at < RESOLVE_DEBOUNCE_SECONDS:
-                    # A double-click or a resolve racing the auto-timer would
-                    # otherwise advance a second round instantly. Only reject
-                    # when nobody has acted on the fresh round yet — a host
-                    # resolving quickly after players submitted is legitimate.
                     if game.actions_since_resolve == 0:
                         await websocket.send_json(
                             {"type": "error", "message": "Round was already resolved"}
@@ -280,9 +291,6 @@ async def websocket_endpoint(websocket: WebSocket, room_code: str):
                 try:
                     game.resolve_round()
                     await broadcast_state(room_code)
-                    # If the game is still in progress, arm the next round's
-                    # auto-resolve timer. No-op if no deadline was set (game
-                    # ended / transitioned to results).
                     arm_action_timer(room_code)
                     maybe_schedule_cleanup(room_code)
                 except ValueError as e:
@@ -333,15 +341,17 @@ async def websocket_endpoint(websocket: WebSocket, room_code: str):
                 elif phase in (Phase.SURVIVAL, Phase.FINALE):
                     p = game.get_player(player_id)
                     if p is not None:
-                        if p.is_host:
-                            # Someone must still be able to start/resolve.
-                            game.promote_next_host()
                         if not p.is_down:
                             # Spec: disconnect = downed. Record that the down
                             # was caused by the disconnect so a rejoin can
                             # undo it without reviving game-downed players.
                             p.is_down = True
                             p.disconnect_down = True
+                        if p.is_host:
+                            # Down first, THEN promote so the old host
+                            # (now downed) is skipped and a standing
+                            # player takes over.
+                            game.promote_next_host()
                 await broadcast_state(room_code)
             # Reap empty/stale rooms after a TTL (idempotent).
             asyncio.create_task(schedule_room_cleanup(room_code))
